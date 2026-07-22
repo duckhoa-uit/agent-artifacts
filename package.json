@@ -1,0 +1,25 @@
+{
+  "name": "agent-artifacts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "artifactctl": "cli/artifactctl.mjs"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "check": "wrangler check startup",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy --minify",
+    "db:migrate:local": "wrangler d1 migrations apply agent-artifacts --local",
+    "db:migrate:remote": "wrangler d1 migrations apply agent-artifacts --remote",
+    "test": "vitest run",
+    "e2e": "node scripts/e2e.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "latest",
+    "vitest": "latest",
+    "wrangler": "latest"
+  }
+}

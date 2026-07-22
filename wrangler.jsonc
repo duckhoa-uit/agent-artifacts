@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agent-artifacts",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "r2_buckets": [
+    { "binding": "ARTIFACTS", "bucket_name": "agent-artifacts-prod" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "agent-artifacts",
+      "database_id": "50753730-df63-45f6-800b-6f3b1b5179f8",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "ENVIRONMENT": "production",
+    "MAX_SMALL_UPLOAD_BYTES": "52428800",
+    "MULTIPART_PART_SIZE_BYTES": "20971520",
+    "DEFAULT_SHARE_TTL_SECONDS": "604800"
+  }
+}
