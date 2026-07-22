@@ -4,6 +4,9 @@ import { createHash } from "node:crypto";
 const baseUrl = (process.env.ARTIFACTS_URL || "").replace(/\/$/, "");
 const adminToken = process.env.ARTIFACTS_ADMIN_TOKEN;
 if (!baseUrl || !adminToken) throw new Error("ARTIFACTS_URL and ARTIFACTS_ADMIN_TOKEN are required");
+const accessClientId = process.env.ARTIFACTS_ACCESS_CLIENT_ID;
+const accessClientSecret = process.env.ARTIFACTS_ACCESS_CLIENT_SECRET;
+if (Boolean(accessClientId) !== Boolean(accessClientSecret)) throw new Error("ARTIFACTS_ACCESS_CLIENT_ID and ARTIFACTS_ACCESS_CLIENT_SECRET must be provided together");
 
 const resources = { keys: [], artifacts: [] };
 const cases = [];
@@ -12,7 +15,7 @@ try {
   const health = await request("GET", "/healthz");
   assert(health.ok === true, "healthz");
   assert((await requestRaw("GET", "/admin/")).status === 200, "admin dashboard shell");
-  assert((await request("GET", "/v1/admin/session", undefined, adminToken)).mode === "break-glass", "admin session");
+  assert(["break-glass", "cloudflare-access"].includes((await request("GET", "/v1/admin/session", undefined, adminToken)).mode), "admin session");
   cases.push("health-and-admin-dashboard");
 
   const first = await issueKey("e2e-owner-one");
@@ -102,7 +105,15 @@ async function issueKey(owner) {
   return issued;
 }
 async function request(method, path, body, bearer) { const response = await requestRaw(method, path, body === undefined ? undefined : JSON.stringify(body), bearer, body === undefined ? {} : { "content-type":"application/json" }); const text = await response.text(); const data = text ? JSON.parse(text) : {}; if (!response.ok) throw new Error(`${method} ${path} ${response.status}: ${text}`); return data; }
-async function requestRaw(method, path, body, bearer, extra = {}) { const headers = { ...extra }; if (bearer) headers.authorization = `Bearer ${bearer}`; return fetch(`${baseUrl}${path}`, { method, body, headers }); }
+async function requestRaw(method, path, body, bearer, extra = {}) {
+  const headers = { ...extra };
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  if (accessClientId && accessClientSecret && (path === "/admin/" || path.startsWith("/v1/admin/"))) {
+    headers["cf-access-client-id"] = accessClientId;
+    headers["cf-access-client-secret"] = accessClientSecret;
+  }
+  return fetch(`${baseUrl}${path}`, { method, body, headers });
+}
 function uploadHeaders(filename, length, hash) { return { "content-type":"text/plain", "content-length":String(length), "x-filename":filename, "x-artifact-sha256":hash, "x-purpose":"e2e" }; }
 function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 function equal(left, right) { return left.length === right.length && left.every((value, index) => value === right[index]); }

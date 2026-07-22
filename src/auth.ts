@@ -27,7 +27,7 @@ export async function requireAdmin(request: Request, env: AppEnv): Promise<Admin
       }
       const jwks = cachedJwks;
       const audiences = String(env.ACCESS_AUD).split(",").map((value: string) => value.trim()).filter(Boolean);
-      const { payload } = await jwtVerify(accessToken, jwks, { issuer, audience: audiences });
+      const { payload } = await jwtVerify(accessToken, jwks, { issuer, audience: audiences[0] });
       const actor = typeof payload.email === "string" ? payload.email : String(payload.sub ?? "access-user");
       return { actor, mode: "cloudflare-access" };
     } catch (cause) {
