@@ -18,7 +18,7 @@ export async function requireScope(request: Request, env: AppEnv, ctx: Execution
 
 export async function requireAdmin(request: Request, env: AppEnv): Promise<AdminContext | Response> {
   const accessToken = request.headers.get("cf-access-jwt-assertion");
-  if (env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD && accessToken) {
+  if (env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUDIENCES && accessToken) {
     try {
       const issuer = `https://${env.ACCESS_TEAM_DOMAIN}`;
       if (!cachedJwks || cachedIssuer !== issuer) {
@@ -26,7 +26,7 @@ export async function requireAdmin(request: Request, env: AppEnv): Promise<Admin
         cachedJwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
       }
       const jwks = cachedJwks;
-      const audiences = String(env.ACCESS_AUD).split(",").map((value: string) => value.trim()).filter(Boolean);
+      const audiences = String(env.ACCESS_AUDIENCES).split(",").map((value: string) => value.trim()).filter(Boolean);
       const { payload } = await jwtVerify(accessToken, jwks, { issuer, audience: audiences[0] });
       const actor = typeof payload.email === "string" ? payload.email : String(payload.sub ?? "access-user");
       return { actor, mode: "cloudflare-access" };
@@ -44,7 +44,7 @@ export async function requireAdmin(request: Request, env: AppEnv): Promise<Admin
 }
 
 export function accessConfigured(env: AppEnv): boolean {
-  return Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD);
+  return Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUDIENCES);
 }
 
 function bearer(request: Request): string | null {

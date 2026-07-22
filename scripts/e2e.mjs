@@ -2,11 +2,11 @@
 import { createHash } from "node:crypto";
 
 const baseUrl = (process.env.ARTIFACTS_URL || "").replace(/\/$/, "");
-const adminToken = process.env.ARTIFACTS_ADMIN_TOKEN;
-if (!baseUrl || !adminToken) throw new Error("ARTIFACTS_URL and ARTIFACTS_ADMIN_TOKEN are required");
-const accessClientId = process.env.ARTIFACTS_ACCESS_CLIENT_ID;
-const accessClientSecret = process.env.ARTIFACTS_ACCESS_CLIENT_SECRET;
-if (Boolean(accessClientId) !== Boolean(accessClientSecret)) throw new Error("ARTIFACTS_ACCESS_CLIENT_ID and ARTIFACTS_ACCESS_CLIENT_SECRET must be provided together");
+const adminToken = process.env.ARTIFACTS_E2E_ADMIN_TOKEN;
+const accessClientId = process.env.ARTIFACTS_E2E_ACCESS_CLIENT_ID;
+const accessClientSecret = process.env.ARTIFACTS_E2E_ACCESS_CLIENT_SECRET;
+if (Boolean(accessClientId) !== Boolean(accessClientSecret)) throw new Error("ARTIFACTS_E2E_ACCESS_CLIENT_ID and ARTIFACTS_E2E_ACCESS_CLIENT_SECRET must be provided together");
+if (!baseUrl || (!adminToken && !accessClientId)) throw new Error("ARTIFACTS_URL and either ARTIFACTS_E2E_ADMIN_TOKEN or the E2E Access service-token pair are required");
 
 const resources = { keys: [], artifacts: [] };
 const cases = [];

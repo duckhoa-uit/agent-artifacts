@@ -49,7 +49,7 @@ node scripts/configure-access.mjs
 node scripts/configure-access.mjs --apply
 ```
 
-Set the printed `ACCESS_TEAM_DOMAIN` (without `https://`) and `ACCESS_AUD` in `wrangler.jsonc`, then deploy. The Worker validates the `Cf-Access-Jwt-Assertion`; `ADMIN_TOKEN` remains a break-glass path for operational recovery and E2E.
+Set the printed `ACCESS_TEAM_DOMAIN` (without `https://`) and `ACCESS_AUDIENCES` in `wrangler.jsonc`, then deploy. The Worker validates the `Cf-Access-Jwt-Assertion`; `ADMIN_TOKEN` remains a break-glass path for operational recovery and E2E.
 
 ## CLI
 
@@ -72,6 +72,6 @@ Downloads stream to disk. Multipart failures trigger an abort, and wrapper failu
 
 ## Verification
 
-`npm test` runs unit and Worker-runtime integration tests against isolated local D1/R2 bindings. `npm run e2e` runs the full deployed API lifecycle and always attempts cleanup. Production E2E requires `ARTIFACTS_URL` and `ARTIFACTS_ADMIN_TOKEN`.
+`npm test` runs unit and Worker-runtime integration tests against isolated local D1/R2 bindings. `npm run e2e` runs the full deployed API lifecycle and always attempts cleanup. Production E2E requires `ARTIFACTS_URL` plus either `ARTIFACTS_E2E_ADMIN_TOKEN` or the `ARTIFACTS_E2E_ACCESS_CLIENT_ID` / `ARTIFACTS_E2E_ACCESS_CLIENT_SECRET` Cloudflare Access service-token pair.
 
 See [docs/decisions/0001-selective-reuse.md](docs/decisions/0001-selective-reuse.md) for upstream provenance and the reuse boundary.

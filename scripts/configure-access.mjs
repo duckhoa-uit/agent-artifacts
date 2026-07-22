@@ -57,8 +57,8 @@ if (apply) {
   console.log(JSON.stringify({
     configured: true,
     access_team_domain: `https://${parsedUrl.hostname}`,
-    access_aud: audiences.join(","),
-    next: "Set ACCESS_TEAM_DOMAIN without https:// and ACCESS_AUD to the comma-separated value above, then deploy.",
+    access_audiences: audiences.join(","),
+    next: "Set ACCESS_TEAM_DOMAIN without https:// and ACCESS_AUDIENCES to the comma-separated value above, then deploy.",
   }));
 } else {
   console.log(JSON.stringify({

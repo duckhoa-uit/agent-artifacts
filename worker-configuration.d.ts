@@ -12,7 +12,7 @@ interface __BaseEnv_Env {
 	DEFAULT_ARTIFACT_RETENTION: "30d";
 	UPLOAD_SESSION_TTL_SECONDS: "86400";
 	ACCESS_TEAM_DOMAIN: "";
-	ACCESS_AUD: "";
+	ACCESS_AUDIENCES: "";
 	CORS_ORIGIN: "";
 	ADMIN_TOKEN: string;
 }
@@ -27,7 +27,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "ENVIRONMENT" | "MAX_SMALL_UPLOAD_BYTES" | "MULTIPART_PART_SIZE_BYTES" | "DEFAULT_SHARE_TTL_SECONDS" | "DEFAULT_ARTIFACT_RETENTION" | "UPLOAD_SESSION_TTL_SECONDS" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD" | "CORS_ORIGIN" | "ADMIN_TOKEN">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "ENVIRONMENT" | "MAX_SMALL_UPLOAD_BYTES" | "MULTIPART_PART_SIZE_BYTES" | "DEFAULT_SHARE_TTL_SECONDS" | "DEFAULT_ARTIFACT_RETENTION" | "UPLOAD_SESSION_TTL_SECONDS" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUDIENCES" | "CORS_ORIGIN" | "ADMIN_TOKEN">> {}
 }
 
 // Begin runtime types
