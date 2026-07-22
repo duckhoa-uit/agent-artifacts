@@ -13,4 +13,4 @@ node cli/github-pr-evidence.mjs --screenshot ./screenshot.png --video ./recordin
 node cli/github-pr-evidence.mjs --screenshot ./screenshot.png --video ./recording.mp4
 ```
 
-The script updates the comment containing `<!-- agent-evidence:v1 -->` instead of creating duplicates. Screenshots are embedded as Markdown images; when both files are present, the screenshot is also the clickable video poster. Failed comment updates delete newly created artifacts.
+The script updates the comment containing `<!-- agent-evidence:v1 -->` instead of creating duplicates. Screenshots are embedded as Markdown images; when both files are present, the screenshot is also the clickable video poster. Failed comment updates delete newly created artifacts, and a successful replacement deletes the previous evidence artifacts recorded in the comment marker.

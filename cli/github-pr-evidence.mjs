@@ -32,11 +32,13 @@ try {
   }
   const poster = evidence.find((item) => item.kind === "screenshot")?.url;
   const lines = evidence.map((item) => item.kind === "screenshot" ? `![Screenshot evidence](${item.url})` : poster ? `[![Play video evidence](${poster})](${item.url})` : `- [Open video evidence](${item.url})`);
-  const body = ["<!-- agent-evidence:v1 -->", "### Agent evidence", ...lines].join("\n");
+  const body = ["<!-- agent-evidence:v1 -->", `<!-- agent-artifact-ids:${uploadedIds.join(",")} -->`, "### Agent evidence", ...lines].join("\n");
   const comments = await ghJson(["api", "--paginate", `repos/${repo}/issues/${pr}/comments`]);
   const existing = comments.find((comment) => comment.body?.includes("<!-- agent-evidence:v1 -->"));
+  const previousIds = existing?.body?.match(/<!-- agent-artifact-ids:([^>]*) -->/)?.[1]?.split(",").filter(Boolean) ?? [];
   if (existing) await gh(["api", "--method", "PATCH", `repos/${repo}/issues/comments/${existing.id}`, "-f", `body=${body}`]);
   else await gh(["api", `repos/${repo}/issues/${pr}/comments`, "-f", `body=${body}`]);
+  for (const artifactId of previousIds) await run(process.execPath, [cli, "delete", artifactId]).catch(() => undefined);
   process.stdout.write(`${JSON.stringify({ repo, pr, updated_comment:Boolean(existing), evidence })}\n`);
 } catch (cause) {
   for (const artifactId of uploadedIds) await run(process.execPath, [cli, "delete", artifactId]).catch(() => undefined);
