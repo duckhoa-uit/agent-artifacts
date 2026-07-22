@@ -26,7 +26,8 @@ export async function requireAdmin(request: Request, env: AppEnv): Promise<Admin
         cachedJwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
       }
       const jwks = cachedJwks;
-      const { payload } = await jwtVerify(accessToken, jwks, { issuer, audience: env.ACCESS_AUD });
+      const audiences = String(env.ACCESS_AUD).split(",").map((value: string) => value.trim()).filter(Boolean);
+      const { payload } = await jwtVerify(accessToken, jwks, { issuer, audience: audiences });
       const actor = typeof payload.email === "string" ? payload.email : String(payload.sub ?? "access-user");
       return { actor, mode: "cloudflare-access" };
     } catch (cause) {

@@ -38,7 +38,18 @@ Set the Worker secret separately:
 npx wrangler secret put ADMIN_TOKEN
 ```
 
-For production admin access, create a Cloudflare Access self-hosted application for `/admin*` and `/v1/admin/*`, then set `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` in `wrangler.jsonc`. The Worker validates the `Cf-Access-Jwt-Assertion`; `ADMIN_TOKEN` remains a break-glass path for operational recovery and E2E.
+For production admin access, create Cloudflare Access self-hosted applications for `/admin*` and `/v1/admin/*`, each with an Allow policy for the administrator email. The Worker accepts the comma-separated audiences from both applications. With an API token that has `Access: Apps and Policies Write`, use the idempotent bootstrap helper:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=...
+export CLOUDFLARE_API_TOKEN=...
+export ARTIFACTS_URL=https://agent-artifacts.example.workers.dev
+export ACCESS_ALLOWED_EMAIL=you@example.com
+node scripts/configure-access.mjs
+node scripts/configure-access.mjs --apply
+```
+
+Set the printed `ACCESS_TEAM_DOMAIN` (without `https://`) and `ACCESS_AUD` in `wrangler.jsonc`, then deploy. The Worker validates the `Cf-Access-Jwt-Assertion`; `ADMIN_TOKEN` remains a break-glass path for operational recovery and E2E.
 
 ## CLI
 
