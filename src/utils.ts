@@ -32,8 +32,12 @@ export function base64url(bytes: Uint8Array): string {
 }
 
 export async function sha256(value: string): Promise<string> {
+  return hex(await sha256Bytes(value));
+}
+
+export async function sha256Bytes(value: string): Promise<Uint8Array> {
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
-  return hex(new Uint8Array(digest));
+  return new Uint8Array(digest);
 }
 
 export function hex(bytes: Uint8Array): string {
@@ -43,19 +47,15 @@ export function hex(bytes: Uint8Array): string {
 export function constantTimeEqual(left: string, right: string): boolean {
   const a = encoder.encode(left);
   const b = encoder.encode(right);
-  let result = a.length ^ b.length;
+  let difference = a.length ^ b.length;
   const length = Math.max(a.length, b.length);
-  for (let index = 0; index < length; index += 1) result |= (a[index] ?? 0) ^ (b[index] ?? 0);
-  return result === 0;
+  for (let index = 0; index < length; index += 1) difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  return difference === 0;
 }
 
 export function safeFilename(value: string | null | undefined): string {
   const cleaned = (value ?? "artifact").replace(/[\\/\0\r\n]/g, "_").trim();
   return cleaned.slice(0, 240) || "artifact";
-}
-
-export function parseJsonBody<T>(request: Request): Promise<T> {
-  return request.json() as Promise<T>;
 }
 
 export function parsePositiveInt(value: unknown, fallback?: number): number | undefined {

@@ -1,6 +1,10 @@
-import type { AppEnv, AuthContext, Scope } from "./types";
+import { createRemoteJWKSet, jwtVerify } from "jose";
+import type { AdminContext, AppEnv, AuthContext, Scope } from "./types";
 import { authenticateApiKey, touchKey } from "./db";
-import { error } from "./utils";
+import { error, sha256Bytes } from "./utils";
+
+let cachedIssuer = "";
+let cachedJwks: ReturnType<typeof createRemoteJWKSet> | undefined;
 
 export async function requireScope(request: Request, env: AppEnv, ctx: ExecutionContext, scope: Scope): Promise<AuthContext | Response> {
   const token = bearer(request);
@@ -12,10 +16,34 @@ export async function requireScope(request: Request, env: AppEnv, ctx: Execution
   return auth;
 }
 
-export function requireAdmin(request: Request, env: AppEnv): Response | null {
+export async function requireAdmin(request: Request, env: AppEnv): Promise<AdminContext | Response> {
+  const accessToken = request.headers.get("cf-access-jwt-assertion");
+  if (env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD && accessToken) {
+    try {
+      const issuer = `https://${env.ACCESS_TEAM_DOMAIN}`;
+      if (!cachedJwks || cachedIssuer !== issuer) {
+        cachedIssuer = issuer;
+        cachedJwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
+      }
+      const jwks = cachedJwks;
+      const { payload } = await jwtVerify(accessToken, jwks, { issuer, audience: env.ACCESS_AUD });
+      const actor = typeof payload.email === "string" ? payload.email : String(payload.sub ?? "access-user");
+      return { actor, mode: "cloudflare-access" };
+    } catch (cause) {
+      console.warn(JSON.stringify({ event: "admin.access_denied", reason: cause instanceof Error ? cause.message : "invalid_jwt" }));
+      return error("Cloudflare Access authentication failed", 401, "unauthorized");
+    }
+  }
+
   const token = bearer(request);
-  if (!token || !env.ADMIN_TOKEN || !constantTime(token, env.ADMIN_TOKEN)) return error("Admin authentication required", 401, "unauthorized");
-  return null;
+  if (token && env.ADMIN_TOKEN && await timingSafeTokenEqual(token, env.ADMIN_TOKEN)) {
+    return { actor: "break-glass-admin", mode: "break-glass" };
+  }
+  return error("Admin authentication required", 401, "unauthorized");
+}
+
+export function accessConfigured(env: AppEnv): boolean {
+  return Boolean(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD);
 }
 
 function bearer(request: Request): string | null {
@@ -25,11 +53,9 @@ function bearer(request: Request): string | null {
   return token || null;
 }
 
-function constantTime(left: string, right: string): boolean {
-  const a = new TextEncoder().encode(left);
-  const b = new TextEncoder().encode(right);
-  let result = a.length ^ b.length;
-  const length = Math.max(a.length, b.length);
-  for (let index = 0; index < length; index += 1) result |= (a[index] ?? 0) ^ (b[index] ?? 0);
-  return result === 0;
+async function timingSafeTokenEqual(left: string, right: string): Promise<boolean> {
+  const [a, b] = await Promise.all([sha256Bytes(left), sha256Bytes(right)]);
+  let difference = 0;
+  for (let index = 0; index < a.length; index += 1) difference |= a[index] ^ b[index];
+  return difference === 0;
 }

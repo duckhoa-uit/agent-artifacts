@@ -13,6 +13,7 @@ const repo = process.env.GITHUB_REPOSITORY || (await ghJson(["repo", "view", "--
 const pr = valueAfter("--pr") || (await ghJson(["pr", "view", "--json", "number"])).number;
 const cli = resolve(dirname(fileURLToPath(import.meta.url)), "artifactctl.mjs");
 const evidence = [];
+const uploadedIds = [];
 if (dryRun) {
   for (const item of [{ file: screenshot, kind: "screenshot" }, { file: video, kind: "video" }]) {
     if (item.file) evidence.push({ file: item.file, kind: item.kind, action: "upload-and-share" });
@@ -20,20 +21,27 @@ if (dryRun) {
   process.stdout.write(`${JSON.stringify({ dry_run: true, repo, pr, evidence }, null, 2)}\n`);
   process.exit(0);
 }
-for (const item of [{ file: screenshot, kind: "screenshot" }, { file: video, kind: "video" }]) {
-  if (!item.file) continue;
-  const uploaded = await run(process.execPath, [cli, "upload", item.file, "--purpose", "pr-evidence", "--source-agent", "github-pr-evidence", "--repo", repo, "--pr", String(pr)]);
-  const artifact = JSON.parse(uploaded);
-  const shared = JSON.parse(await run(process.execPath, [cli, "share", artifact.id, "--retention", "retain"]));
-  evidence.push({ ...item, artifact_id: artifact.id, url: shared.url });
+try {
+  for (const item of [{ file: screenshot, kind: "screenshot" }, { file: video, kind: "video" }]) {
+    if (!item.file) continue;
+    const uploaded = await run(process.execPath, [cli, "upload", item.file, "--purpose", "pr-evidence", "--source-agent", "github-pr-evidence", "--repo", repo, "--pr", String(pr), "--retention", "retain"]);
+    const artifact = JSON.parse(uploaded);
+    uploadedIds.push(artifact.id);
+    const shared = JSON.parse(await run(process.execPath, [cli, "share", artifact.id, "--retention", "retain"]));
+    evidence.push({ ...item, artifact_id: artifact.id, url: shared.url });
+  }
+  const poster = evidence.find((item) => item.kind === "screenshot")?.url;
+  const lines = evidence.map((item) => item.kind === "screenshot" ? `![Screenshot evidence](${item.url})` : poster ? `[![Play video evidence](${poster})](${item.url})` : `- [Open video evidence](${item.url})`);
+  const body = ["<!-- agent-evidence:v1 -->", "### Agent evidence", ...lines].join("\n");
+  const comments = await ghJson(["api", "--paginate", `repos/${repo}/issues/${pr}/comments`]);
+  const existing = comments.find((comment) => comment.body?.includes("<!-- agent-evidence:v1 -->"));
+  if (existing) await gh(["api", "--method", "PATCH", `repos/${repo}/issues/comments/${existing.id}`, "-f", `body=${body}`]);
+  else await gh(["api", `repos/${repo}/issues/${pr}/comments`, "-f", `body=${body}`]);
+  process.stdout.write(`${JSON.stringify({ repo, pr, updated_comment:Boolean(existing), evidence })}\n`);
+} catch (cause) {
+  for (const artifactId of uploadedIds) await run(process.execPath, [cli, "delete", artifactId]).catch(() => undefined);
+  throw cause;
 }
-
-const body = ["<!-- agent-evidence:v1 -->", "### Agent evidence", ...evidence.map((item) => item.kind === "screenshot" ? `![${item.kind}](${item.url})` : `- [Open ${item.kind}](${item.url})`)].join("\n");
-const comments = await ghJson(["api", "--paginate", `repos/${repo}/issues/${pr}/comments`]);
-const existing = comments.find((comment) => comment.body?.includes("<!-- agent-evidence:v1 -->"));
-if (existing) await gh(["api", "--method", "PATCH", `repos/${repo}/issues/comments/${existing.id}`, "-f", `body=${body}`]);
-else await gh(["api", `repos/${repo}/issues/${pr}/comments`, "-f", `body=${body}`]);
-process.stdout.write(`${JSON.stringify({ repo, pr, updated_comment: Boolean(existing), evidence })}\n`);
 
 function valueAfter(flag) { const index = args.indexOf(flag); return index >= 0 ? args[index + 1] : undefined; }
 function ghJson(parameters) { return gh(parameters).then((value) => JSON.parse(value)); }

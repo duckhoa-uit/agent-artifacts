@@ -5,6 +5,7 @@
   "compatibility_date": "2026-07-22",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "preview_urls": false,
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
@@ -20,10 +21,26 @@
       "migrations_dir": "migrations"
     }
   ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+  "secrets": {
+    "required": ["ADMIN_TOKEN"]
+  },
   "vars": {
     "ENVIRONMENT": "production",
     "MAX_SMALL_UPLOAD_BYTES": "52428800",
     "MULTIPART_PART_SIZE_BYTES": "20971520",
-    "DEFAULT_SHARE_TTL_SECONDS": "604800"
+    "DEFAULT_SHARE_TTL_SECONDS": "604800",
+    "DEFAULT_ARTIFACT_RETENTION": "30d",
+    "UPLOAD_SESSION_TTL_SECONDS": "86400",
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": "",
+    "CORS_ORIGIN": ""
   }
 }

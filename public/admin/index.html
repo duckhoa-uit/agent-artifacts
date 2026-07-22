@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Artifact Operations</title>
+    <link rel="stylesheet" href="/admin/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to workspace</a>
+    <header class="masthead">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">A</span><div><strong>ARTIFACT OPS</strong><small>Evidence vault / production</small></div></div>
+      <div class="session"><span id="healthDot" class="status-dot"></span><span id="sessionLabel">Connecting</span><button id="authButton" class="button subtle" type="button">Authenticate</button></div>
+    </header>
+    <div class="shell">
+      <aside class="rail" aria-label="Operations sections">
+        <p class="eyebrow">CONTROL PLANE</p>
+        <nav id="nav">
+          <button class="nav-item active" data-view="overview"><span>01</span>Overview</button>
+          <button class="nav-item" data-view="keys"><span>02</span>API keys</button>
+          <button class="nav-item" data-view="artifacts"><span>03</span>Artifacts</button>
+          <button class="nav-item" data-view="shares"><span>04</span>Shares</button>
+          <button class="nav-item" data-view="audit"><span>05</span>Audit ledger</button>
+        </nav>
+        <div class="rail-note"><span>Retention policy</span><strong>30 days default</strong><small>Hourly cleanup cycle</small></div>
+      </aside>
+      <main id="workspace" class="workspace" tabindex="-1">
+        <section id="view-overview" class="view active">
+          <div class="title-row"><div><p class="eyebrow">SYSTEM STATE</p><h1>Operations overview</h1><p>Storage, access, and evidence delivery at a glance.</p></div><button class="button" data-refresh>Refresh state</button></div>
+          <div id="metrics" class="metrics" aria-live="polite"></div>
+          <div class="panel"><div class="panel-head"><div><p class="eyebrow">LIVE LEDGER</p><h2>Recent activity</h2></div><span class="tag">Latest 8</span></div><div id="recentEvents" class="event-list"></div></div>
+        </section>
+        <section id="view-keys" class="view">
+          <div class="title-row"><div><p class="eyebrow">IDENTITIES</p><h1>API keys</h1><p>Issue least-privilege credentials and revoke them immediately.</p></div><button id="newKeyButton" class="button">Issue API key</button></div>
+          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Owner</th><th>Prefix</th><th>Scopes</th><th>Last used</th><th>State</th><th></th></tr></thead><tbody id="keysTable"></tbody></table></div></div>
+        </section>
+        <section id="view-artifacts" class="view">
+          <div class="title-row"><div><p class="eyebrow">EVIDENCE INVENTORY</p><h1>Artifacts</h1><p>Inspect ownership, integrity, retention, and delivery state.</p></div><label class="search"><span class="sr-only">Search artifacts</span><input id="artifactSearch" type="search" placeholder="Search filename, owner, repo"></label></div>
+          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Owner</th><th>Size</th><th>Integrity</th><th>Retention</th><th></th></tr></thead><tbody id="artifactsTable"></tbody></table></div></div>
+        </section>
+        <section id="view-shares" class="view">
+          <div class="title-row"><div><p class="eyebrow">DELIVERY LINKS</p><h1>Shares</h1><p>Review public evidence links and revoke access.</p></div></div>
+          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Created by</th><th>Created</th><th>Expiry</th><th>State</th><th></th></tr></thead><tbody id="sharesTable"></tbody></table></div></div>
+        </section>
+        <section id="view-audit" class="view">
+          <div class="title-row"><div><p class="eyebrow">IMMUTABLE TRACE</p><h1>Audit ledger</h1><p>Administrative and agent activity in reverse chronological order.</p></div></div>
+          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Artifact</th><th>Metadata</th></tr></thead><tbody id="auditTable"></tbody></table></div></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="authDialog"><form method="dialog" class="dialog-card"><p class="eyebrow">BREAK-GLASS ACCESS</p><h2>Authenticate locally</h2><p>Use the Worker admin secret only when Cloudflare Access is not configured. It stays in this browser tab.</p><label>Admin token<input id="adminToken" type="password" autocomplete="off" required></label><div class="dialog-actions"><button class="button subtle" value="cancel">Cancel</button><button id="saveToken" class="button" value="default">Connect</button></div></form></dialog>
+    <dialog id="keyDialog"><form id="keyForm" class="dialog-card"><p class="eyebrow">NEW IDENTITY</p><h2>Issue API key</h2><label>Owner<input name="owner" required maxlength="200" placeholder="hermes-prod"></label><fieldset><legend>Scopes</legend><label><input type="checkbox" name="scope" value="artifact:write" checked> Upload artifacts</label><label><input type="checkbox" name="scope" value="artifact:read" checked> Read owned artifacts</label><label><input type="checkbox" name="scope" value="artifact:delete" checked> Delete owned artifacts</label><label><input type="checkbox" name="scope" value="share:create" checked> Create share links</label></fieldset><div class="dialog-actions"><button type="button" class="button subtle" data-close>Cancel</button><button class="button" type="submit">Issue key</button></div></form></dialog>
+    <dialog id="secretDialog"><div class="dialog-card"><p class="eyebrow">ONE-TIME REVEAL</p><h2>Seal this key now</h2><p>This token cannot be retrieved after this dialog closes.</p><div class="secret-box"><code id="secretValue"></code><button id="copySecret" class="button subtle" type="button">Copy</button></div><div class="dialog-actions"><button id="closeSecret" class="button" type="button">I stored it safely</button></div></div></dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/admin/app.js"></script>
+  </body>
+</html>

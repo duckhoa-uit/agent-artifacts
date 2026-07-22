@@ -1,16 +1,18 @@
-export type AppEnv = Env & { ADMIN_TOKEN: string };
+export type AppEnv = Env;
 
-export type Scope =
-  | "artifact:write"
-  | "artifact:read"
-  | "artifact:delete"
-  | "share:create"
-  | "admin:keys";
+export const AGENT_SCOPES = ["artifact:write", "artifact:read", "artifact:delete", "share:create"] as const;
+export type Scope = (typeof AGENT_SCOPES)[number];
+export type Retention = "7d" | "30d" | "retain";
 
 export interface AuthContext {
   id: string;
   owner: string;
   scopes: Scope[];
+}
+
+export interface AdminContext {
+  actor: string;
+  mode: "cloudflare-access" | "break-glass";
 }
 
 export interface ArtifactRow {
@@ -28,4 +30,7 @@ export interface ArtifactRow {
   purpose: string | null;
   created_at: number;
   deleted_at: number | null;
+  retention: Retention;
+  expires_at: number | null;
+  checksum_status: "verified" | "client_asserted" | "unverified";
 }
