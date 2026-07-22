@@ -70,6 +70,7 @@ async function loadAudit() {
 
 $("#nav").addEventListener("click", (event) => { const item = event.target.closest("[data-view]"); if (item) loadView(item.dataset.view).catch(handle); });
 $$('[data-refresh]').forEach((button) => button.addEventListener("click", () => loadView(state.view).catch(handle)));
+$("#cleanupButton").addEventListener("click", async () => { try { const result = await api("/v1/admin/cleanup", { method:"POST" }); toast(`Cleanup complete · ${result.expiredArtifacts} expired · ${result.staleUploads} stale · ${result.reconciledObjects} reconciled`); await loadOverview(); } catch (error) { handle(error); } });
 $("#authButton").addEventListener("click", () => $("#authDialog").showModal());
 $("#saveToken").addEventListener("click", (event) => { event.preventDefault(); state.token = $("#adminToken").value.trim(); sessionStorage.setItem("artifactAdminToken", state.token); $("#authDialog").close(); connect(); });
 $("#newKeyButton").addEventListener("click", () => $("#keyDialog").showModal());

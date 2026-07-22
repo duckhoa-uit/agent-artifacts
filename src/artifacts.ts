@@ -238,13 +238,14 @@ export async function serveArtifact(request: Request, env: AppEnv, artifact: Art
 export async function deleteArtifactData(env: AppEnv, artifact: ArtifactRow): Promise<void> {
   const active = await env.DB.prepare("SELECT * FROM upload_sessions WHERE artifact_id = ?1 AND status = 'active'").bind(artifact.id).first<UploadSession>();
   if (active) await env.ARTIFACTS.resumeMultipartUpload(active.r2_key, active.r2_upload_id).abort().catch(() => undefined);
-  await env.ARTIFACTS.delete(artifact.r2_key);
   const deletedAt = now();
   await env.DB.batch([
     env.DB.prepare("UPDATE artifacts SET deleted_at = COALESCE(deleted_at, ?1) WHERE id = ?2").bind(deletedAt, artifact.id),
     env.DB.prepare("UPDATE upload_sessions SET status = 'aborted', last_activity_at = ?1 WHERE artifact_id = ?2 AND status = 'active'").bind(deletedAt, artifact.id),
     env.DB.prepare("UPDATE shares SET revoked_at = COALESCE(revoked_at, ?1) WHERE artifact_id = ?2").bind(deletedAt, artifact.id),
   ]);
+  await env.ARTIFACTS.delete(artifact.r2_key);
+  await env.DB.prepare("UPDATE artifacts SET r2_deleted_at = ?1 WHERE id = ?2").bind(now(), artifact.id).run();
 }
 
 function headersInput(headers: Headers): Record<string, unknown> {

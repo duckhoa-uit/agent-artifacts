@@ -2,12 +2,14 @@ import type { AdminContext, AppEnv } from "./types";
 import { AGENT_SCOPES } from "./types";
 import { audit, createApiKey, createShare, getArtifact } from "./db";
 import { deleteArtifactData, serveArtifact } from "./artifacts";
+import { runCleanup } from "./cleanup";
 import { adminShareSchema, createKeySchema, parseJson, updateKeySchema } from "./schema";
 import { error, json, now } from "./utils";
 
 export async function handleAdmin(request: Request, env: AppEnv, admin: AdminContext, path: string): Promise<Response> {
   if (path === "/v1/admin/session" && request.method === "GET") return json({ authenticated: true, actor: admin.actor, mode: admin.mode });
   if (path === "/v1/admin/overview" && request.method === "GET") return overview(env);
+  if (path === "/v1/admin/cleanup" && request.method === "POST") return json(await runCleanup(env));
   if (path === "/v1/admin/api-keys" && request.method === "GET") return listApiKeys(request, env);
   if (path === "/v1/admin/api-keys" && request.method === "POST") return issueApiKey(request, env, admin);
   if (path.startsWith("/v1/admin/api-keys/") && request.method === "PATCH") return updateApiKey(request, env, admin, path.split("/")[4]);
@@ -84,7 +86,7 @@ async function listArtifacts(request: Request, env: AppEnv): Promise<Response> {
   const { limit, offset } = pagination(request);
   const search = `%${url.searchParams.get("q")?.trim() ?? ""}%`;
   const result = await env.DB.prepare(
-    "SELECT a.id, a.filename, a.content_type, a.size_bytes, a.sha256, a.source_agent, a.repo, a.pr_number, a.task_id, a.purpose, a.created_at, a.deleted_at, a.retention, a.expires_at, a.checksum_status, k.owner, k.key_prefix FROM artifacts a JOIN api_keys k ON k.id = a.api_key_id WHERE (a.filename LIKE ?1 OR k.owner LIKE ?1 OR COALESCE(a.repo, '') LIKE ?1) ORDER BY a.created_at DESC LIMIT ?2 OFFSET ?3",
+    "SELECT a.id, a.filename, a.content_type, a.size_bytes, a.sha256, a.source_agent, a.repo, a.pr_number, a.task_id, a.purpose, a.created_at, a.deleted_at, a.r2_deleted_at, a.retention, a.expires_at, a.checksum_status, k.owner, k.key_prefix FROM artifacts a JOIN api_keys k ON k.id = a.api_key_id WHERE (a.filename LIKE ?1 OR k.owner LIKE ?1 OR COALESCE(a.repo, '') LIKE ?1) ORDER BY a.created_at DESC LIMIT ?2 OFFSET ?3",
   ).bind(search, limit, offset).all();
   return json({ data: result.results, limit, offset });
 }

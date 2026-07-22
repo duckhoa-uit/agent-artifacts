@@ -30,6 +30,7 @@ export interface ArtifactRow {
   purpose: string | null;
   created_at: number;
   deleted_at: number | null;
+  r2_deleted_at: number | null;
   retention: Retention;
   expires_at: number | null;
   checksum_status: "verified" | "client_asserted" | "unverified";

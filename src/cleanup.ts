@@ -3,7 +3,7 @@ import { audit } from "./db";
 import { deleteArtifactData } from "./artifacts";
 import { now } from "./utils";
 
-export async function runCleanup(env: AppEnv): Promise<{ expiredArtifacts: number; staleUploads: number }> {
+export async function runCleanup(env: AppEnv): Promise<{ expiredArtifacts: number; staleUploads: number; reconciledObjects: number }> {
   const timestamp = now();
   const staleBefore = timestamp - Number(env.UPLOAD_SESSION_TTL_SECONDS);
   const stale = await env.DB.prepare(
@@ -24,5 +24,13 @@ export async function runCleanup(env: AppEnv): Promise<{ expiredArtifacts: numbe
     await deleteArtifactData(env, artifact);
     await audit(env, "cleanup.artifact_expired", { artifactId: artifact.id, metadata: { retention: artifact.retention } });
   }
-  return { expiredArtifacts: expired.results.length, staleUploads: stale.results.length };
+
+  const pendingObjects = await env.DB.prepare("SELECT * FROM artifacts WHERE deleted_at IS NOT NULL AND r2_deleted_at IS NULL LIMIT 100")
+    .all<ArtifactRow>();
+  for (const artifact of pendingObjects.results) {
+    await env.ARTIFACTS.delete(artifact.r2_key);
+    await env.DB.prepare("UPDATE artifacts SET r2_deleted_at = ?1 WHERE id = ?2 AND r2_deleted_at IS NULL").bind(now(), artifact.id).run();
+    await audit(env, "cleanup.r2_reconciled", { artifactId: artifact.id });
+  }
+  return { expiredArtifacts: expired.results.length, staleUploads: stale.results.length, reconciledObjects: pendingObjects.results.length };
 }

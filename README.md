@@ -7,7 +7,7 @@ Private artifact storage for Codex, Claude, Hermes, and automation workflows. A 
 - Owner-isolated agent API keys with `artifact:write`, `artifact:read`, `artifact:delete`, and `share:create` scopes.
 - SHA-256-verified uploads up to 50 MB and size-validated R2 multipart uploads above that limit.
 - GET, HEAD, Range, ETag conditionals, private artifacts, and revocable opaque share URLs.
-- `7d`, `30d`, and `retain` artifact policies with hourly cleanup of expired artifacts and stale multipart sessions.
+- `7d`, `30d`, and `retain` artifact policies with hourly cleanup of expired artifacts, stale multipart sessions, and retryable R2 deletion reconciliation.
 - Cloudflare Access-aware admin console at `/admin` for keys, artifacts, shares, overview metrics, and audit events.
 - One-time raw key reveal; D1 stores only a SHA-256 hash and short prefix.
 - Shared CLI plus artifact-store, GitHub PR evidence, and Hermes gateway skills.

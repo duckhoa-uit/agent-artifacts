@@ -61,13 +61,20 @@ describe("artifact service", () => {
     const key = await issueKey("cleanup-agent");
     const artifact = await upload(key.token, new TextEncoder().encode("expired"), "expired.txt");
     await env.DB.prepare("UPDATE artifacts SET expires_at = 1 WHERE id = ?1").bind(artifact.id).run();
-    expect((await runCleanup(env)).expiredArtifacts).toBe(1);
+    const cleanup = await runCleanup(env);
+    expect(cleanup.expiredArtifacts).toBe(1);
+    expect(cleanup.reconciledObjects).toBe(0);
     expect(await env.ARTIFACTS.head(`artifacts/${artifact.id}`)).toBeNull();
+    const purged = await env.DB.prepare("SELECT r2_deleted_at FROM artifacts WHERE id = ?1").bind(artifact.id).first<{ r2_deleted_at: number | null }>();
+    expect(purged?.r2_deleted_at).toBeTypeOf("number");
 
     const session = await SELF.fetch("https://example.test/v1/admin/session", { headers: adminHeaders });
     expect(session.status).toBe(200);
     expect(await session.json()).toMatchObject({ authenticated: true, mode: "break-glass" });
     expect((await SELF.fetch("https://example.test/v1/admin/overview", { headers: adminHeaders })).status).toBe(200);
+    const adminCleanup = await SELF.fetch("https://example.test/v1/admin/cleanup", { method: "POST", headers: adminHeaders });
+    expect(adminCleanup.status).toBe(200);
+    expect(await adminCleanup.json()).toMatchObject({ reconciledObjects: 0 });
   });
 });
 
