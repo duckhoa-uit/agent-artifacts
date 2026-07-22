@@ -53,8 +53,13 @@ Set the printed `ACCESS_TEAM_DOMAIN` (without `https://`) and `ACCESS_AUD` in `w
 
 ## CLI
 
+The Worker URL is the only endpoint configuration. Private artifact commands also
+require a profile-scoped API key; the key is deliberately not included in the
+shared `.env.example`.
+
 ```bash
 export ARTIFACTS_URL=https://agent-artifacts.example.workers.dev
+# Required only when using the private artifact CLI:
 export ARTIFACTS_API_KEY=ak_live_...
 
 node cli/artifactctl.mjs upload screenshot.png --purpose pr-evidence --retention retain
