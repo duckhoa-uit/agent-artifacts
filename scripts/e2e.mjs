@@ -40,6 +40,10 @@ try {
   assert((await requestRaw("GET", `/v1/artifacts/${smallArtifact.id}`, undefined, second.token)).status === 404, "owner isolation");
   cases.push("small-upload-integrity-owner-isolation");
 
+  const rotated = await issueKey("e2e-owner-one");
+  assert((await requestRaw("GET", `/v1/artifacts/${smallArtifact.id}`, undefined, rotated.token)).status === 200, "principal survives key rotation");
+  cases.push("principal-key-rotation");
+
   const downloaded = await requestRaw("GET", `/v1/artifacts/${smallArtifact.id}`, undefined, first.token);
   assert(downloaded.status === 200 && equal(new Uint8Array(await downloaded.arrayBuffer()), small), "authenticated download");
   const etag = downloaded.headers.get("etag");
@@ -50,10 +54,10 @@ try {
   assert(range.status === 206 && await range.text() === "agent-", "HTTP Range");
   cases.push("get-head-range-conditional");
 
-  const share = await request("POST", `/v1/artifacts/${smallArtifact.id}/shares`, { retention: "temporary", expires_in_seconds: 600 }, first.token);
+  const share = await request("POST", `/v1/artifacts/${smallArtifact.id}/shares`, { retention: "temporary", expires_in_seconds: 600 }, rotated.token);
   const shared = await requestRaw("GET", new URL(share.url).pathname, undefined, undefined, { range: "bytes=-6" });
   assert(shared.status === 206 && await shared.text() === "ayload", "bearerless share Range");
-  await requestRaw("DELETE", `/v1/shares/${share.id}`, undefined, first.token);
+  await requestRaw("DELETE", `/v1/shares/${share.id}`, undefined, rotated.token);
   assert((await requestRaw("GET", new URL(share.url).pathname)).status === 404, "share revoke");
   cases.push("share-create-range-revoke");
 
@@ -77,12 +81,16 @@ try {
   cases.push("multipart-validation-idempotency-range");
 
   const overview = await request("GET", "/v1/admin/overview", undefined, adminToken);
-  assert(overview.active_keys >= 2 && overview.active_artifacts >= 2, "admin overview state");
+  assert(overview.active_keys >= 3 && overview.active_artifacts >= 2, "admin overview state");
   const artifacts = await request("GET", "/v1/admin/artifacts?q=e2e-owner-one", undefined, adminToken);
   assert(artifacts.data.some((item) => item.id === smallArtifact.id), "admin artifact search");
   const audit = await request("GET", "/v1/admin/audit-logs?limit=100", undefined, adminToken);
-  assert(audit.data.some((item) => item.event_type === "artifact.upload"), "audit ledger");
-  cases.push("admin-overview-artifacts-audit");
+  assert(audit.data.some((item) => item.event_type === "artifact.upload" && item.artifact_id === smallArtifact.id && item.synthetic === 1), "audit ledger and synthetic marker");
+  const cleanAnalytics = await request("GET", "/v1/admin/analytics?days=30", undefined, adminToken);
+  assert(cleanAnalytics.include_synthetic === false && cleanAnalytics.totals.uploads === 0, "synthetic traffic hidden by default");
+  const allAnalytics = await waitForAnalytics();
+  assert(allAnalytics.include_synthetic === true && allAnalytics.totals.uploads >= 2 && allAnalytics.totals.downloads >= 2 && allAnalytics.totals.shares >= 1, "usage rollup analytics");
+  cases.push("admin-overview-artifacts-audit-analytics");
 
   await requestRaw("DELETE", `/v1/admin/api-keys/${first.id}`, undefined, undefined, { authorization:`Bearer ${adminToken}` });
   resources.keys.splice(resources.keys.indexOf(first.id), 1);
@@ -108,9 +116,19 @@ if (failure) {
 }
 
 async function issueKey(owner) {
-  const issued = await request("POST", "/v1/admin/api-keys", { owner, scopes:["artifact:write", "artifact:read", "artifact:delete", "share:create"] }, adminToken);
+  const issued = await request("POST", "/v1/admin/api-keys", { owner, synthetic:true, scopes:["artifact:write", "artifact:read", "artifact:delete", "share:create"] }, adminToken);
   resources.keys.push(issued.id);
   return issued;
+}
+async function waitForAnalytics() {
+  const deadline = Date.now() + 5000;
+  let result;
+  while (Date.now() < deadline) {
+    result = await request("GET", "/v1/admin/analytics?days=30&include_synthetic=true", undefined, adminToken);
+    if (result.totals.uploads >= 2 && result.totals.downloads >= 2) return result;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return result;
 }
 async function request(method, path, body, bearer) { const response = await requestRaw(method, path, body === undefined ? undefined : JSON.stringify(body), bearer, body === undefined ? {} : { "content-type":"application/json" }); const text = await response.text(); const data = text ? JSON.parse(text) : {}; if (!response.ok) throw new Error(`${method} ${path} ${response.status}: ${text}`); return data; }
 async function requestRaw(method, path, body, bearer, extra = {}) {

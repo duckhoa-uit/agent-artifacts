@@ -32,6 +32,7 @@ export const shareInputSchema = z.object({
 export const createKeySchema = z.object({
   owner: z.string().trim().min(1).max(200),
   scopes: z.array(scopeSchema).min(1).default([...AGENT_SCOPES]),
+  synthetic: z.boolean().default(false),
   expires_in_seconds: z.coerce.number().int().positive().max(31_536_000).optional(),
   expires_at: z.number().int().positive().nullable().optional(),
 });

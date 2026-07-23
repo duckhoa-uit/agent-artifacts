@@ -15,6 +15,12 @@ Create one API key per agent or profile. Grant only the scopes needed:
 - `share:create` for bearerless share links.
 - `artifact:delete` for explicit cleanup and wrapper rollback.
 
+An API key belongs to a stable principal (the owner/profile name), not to one
+key instance. Rotating a key for the same owner preserves access to that
+owner's existing artifacts. Mark disposable CI, smoke, or E2E keys as
+synthetic in the admin UI so their usage is excluded from the default admin
+analytics totals.
+
 The GitHub PR and Hermes workflows require write, share, and delete scopes
 because they clean up artifacts when later delivery fails.
 
@@ -33,6 +39,10 @@ artifactctl delete ARTIFACT_ID
 Successful commands write one JSON object to stdout. The CLI reads the deployed
 Worker's capabilities and uses multipart upload above its advertised direct-upload
 limit.
+
+For a coding-agent smoke test, upload a real file with a quoted path, parse the
+returned `artifact_id`, download it to a separate path, and compare size and
+SHA-256 before deleting the short-lived artifact.
 
 ## GitHub PR evidence
 
@@ -60,5 +70,8 @@ expiry for Hermes to return directly.
 - `401`: the key is invalid, expired, or revoked.
 - `403`: the key lacks a required scope.
 - `404`: the artifact is absent or belongs to another key owner.
+- A rotated key can read an existing artifact only when it uses the same owner
+  name as the original key; changing the owner intentionally creates an
+  isolated principal.
 - GitHub command failure: run `gh auth status`, verify repository access, and
   pass `--pr` or `GITHUB_REPOSITORY` explicitly when auto-detection is wrong.

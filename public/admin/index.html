@@ -22,6 +22,7 @@
           <button class="nav-item" data-view="artifacts"><span>03</span>Artifacts</button>
           <button class="nav-item" data-view="shares"><span>04</span>Shares</button>
           <button class="nav-item" data-view="audit"><span>05</span>Audit ledger</button>
+          <button class="nav-item" data-view="analytics"><span>06</span>Analytics</button>
         </nav>
         <div class="rail-note"><span>Retention policy</span><strong>30 days default</strong><small>Hourly cleanup cycle</small></div>
       </aside>
@@ -43,6 +44,14 @@
           <div class="title-row"><div><p class="eyebrow">DELIVERY LINKS</p><h1>Shares</h1><p>Review public evidence links and revoke access.</p></div></div>
           <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Created by</th><th>Created</th><th>Expiry</th><th>State</th><th></th></tr></thead><tbody id="sharesTable"></tbody></table></div><div id="sharesPager" class="pager"></div></div>
         </section>
+        <section id="view-analytics" class="view">
+          <div class="title-row"><div><p class="eyebrow">USAGE SIGNAL</p><h1>Analytics</h1><p>Daily uploads, downloads, shares, and bytes by stable agent identity.</p></div><div class="actions"><label class="select-label">Window<select id="analyticsDays"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></label><label class="check-label"><input id="analyticsSynthetic" type="checkbox"> Include synthetic</label></div></div>
+          <div id="analyticsMetrics" class="metrics" aria-live="polite"></div>
+          <div class="analytics-grid">
+            <div class="panel table-panel"><div class="panel-head"><div><p class="eyebrow">DAILY ROLLUP</p><h2>Usage by day</h2></div></div><div class="table-wrap"><table><thead><tr><th>Day</th><th>Event</th><th>Count</th><th>Bytes</th><th>Traffic</th></tr></thead><tbody id="analyticsDaily"></tbody></table></div></div>
+            <div class="panel table-panel"><div class="panel-head"><div><p class="eyebrow">OWNERS</p><h2>Top principals</h2></div></div><div class="table-wrap"><table><thead><tr><th>Principal</th><th>Event count</th><th>Bytes</th><th>Traffic</th></tr></thead><tbody id="analyticsOwners"></tbody></table></div></div>
+          </div>
+        </section>
         <section id="view-audit" class="view">
           <div class="title-row"><div><p class="eyebrow">IMMUTABLE TRACE</p><h1>Audit ledger</h1><p>Administrative and agent activity in reverse chronological order.</p></div></div>
           <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Artifact</th><th>Metadata</th></tr></thead><tbody id="auditTable"></tbody></table></div><div id="auditPager" class="pager"></div></div>
@@ -51,7 +60,7 @@
     </div>
 
     <dialog id="authDialog"><form method="dialog" class="dialog-card"><p class="eyebrow">BREAK-GLASS ACCESS</p><h2>Authenticate locally</h2><p>Use the Worker admin secret only when Cloudflare Access is not configured. It stays in this browser tab.</p><label>Admin token<input id="adminToken" type="password" autocomplete="off" required></label><div class="dialog-actions"><button class="button subtle" value="cancel">Cancel</button><button id="saveToken" class="button" value="default">Connect</button></div></form></dialog>
-    <dialog id="keyDialog"><form id="keyForm" class="dialog-card"><p class="eyebrow">NEW IDENTITY</p><h2>Issue API key</h2><label>Owner<input name="owner" required maxlength="200" placeholder="hermes-prod"></label><fieldset><legend>Scopes</legend><label><input type="checkbox" name="scope" value="artifact:write" checked> Upload artifacts</label><label><input type="checkbox" name="scope" value="artifact:read" checked> Read owned artifacts</label><label><input type="checkbox" name="scope" value="artifact:delete" checked> Delete owned artifacts</label><label><input type="checkbox" name="scope" value="share:create" checked> Create share links</label></fieldset><div class="dialog-actions"><button type="button" class="button subtle" data-close>Cancel</button><button class="button" type="submit">Issue key</button></div></form></dialog>
+    <dialog id="keyDialog"><form id="keyForm" class="dialog-card"><p class="eyebrow">NEW IDENTITY</p><h2>Issue API key</h2><label>Owner<input name="owner" required maxlength="200" placeholder="hermes-prod"></label><fieldset><legend>Scopes</legend><label><input type="checkbox" name="scope" value="artifact:write" checked> Upload artifacts</label><label><input type="checkbox" name="scope" value="artifact:read" checked> Read owned artifacts</label><label><input type="checkbox" name="scope" value="artifact:delete" checked> Delete owned artifacts</label><label><input type="checkbox" name="scope" value="share:create" checked> Create share links</label></fieldset><label class="check-label"><input type="checkbox" name="synthetic"> Mark as synthetic/test traffic</label><div class="dialog-actions"><button type="button" class="button subtle" data-close>Cancel</button><button class="button" type="submit">Issue key</button></div></form></dialog>
     <dialog id="secretDialog"><div class="dialog-card"><p class="eyebrow">ONE-TIME REVEAL</p><h2>Seal this key now</h2><p>This token cannot be retrieved after this dialog closes.</p><div class="secret-box"><code id="secretValue"></code><button id="copySecret" class="button subtle" type="button">Copy</button></div><div class="dialog-actions"><button id="closeSecret" class="button" type="button">I stored it safely</button></div></div></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script type="module" src="/admin/app.js"></script>

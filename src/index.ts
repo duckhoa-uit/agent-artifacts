@@ -31,7 +31,7 @@ export default {
         });
       } else if (path.startsWith("/v1/admin/")) {
         const admin = await requireAdmin(request, env);
-        response = admin instanceof Response ? admin : await handleAdmin(request, env, admin, path);
+        response = admin instanceof Response ? admin : await handleAdmin(request, env, admin, path, ctx);
       } else if (path === "/v1/artifacts" && request.method === "POST") {
         response = await createSmallArtifact(request, env, ctx);
       } else if (path === "/v1/uploads" && request.method === "POST") {

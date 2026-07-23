@@ -15,8 +15,12 @@ describe("artifact service", () => {
     expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(first.token) })).status).toBe(200);
     expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(second.token) })).status).toBe(404);
 
+    const rotated = await issueKey("agent-one");
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(rotated.token) })).status).toBe(200);
+
     expect((await SELF.fetch(`https://example.test/v1/admin/api-keys/${first.id}`, { method: "DELETE", headers: adminHeaders })).status).toBe(204);
     expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(first.token) })).status).toBe(401);
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(rotated.token) })).status).toBe(200);
   });
 
   it("verifies small-upload checksums and persists retention", async () => {
@@ -107,10 +111,27 @@ describe("artifact service", () => {
     expect(inventory.status).toBe(200);
     expect(await inventory.json()).toMatchObject({ total: expect.any(Number), limit: 1, offset: 0 });
   });
+
+  it("separates synthetic usage from the admin analytics rollup", async () => {
+    const key = await issueKey("synthetic-agent", true);
+    const artifact = await upload(key.token, new TextEncoder().encode("analytics"), "analytics.txt");
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(key.token) })).status).toBe(200);
+
+    const hidden = await SELF.fetch("https://example.test/v1/admin/analytics?days=30", { headers: adminHeaders });
+    expect(hidden.status).toBe(200);
+    expect(await hidden.json()).toMatchObject({ include_synthetic: false, totals: { uploads: 0, downloads: 0, shares: 0 } });
+
+    const visible = await SELF.fetch("https://example.test/v1/admin/analytics?days=30&include_synthetic=true", { headers: adminHeaders });
+    expect(visible.status).toBe(200);
+    const payload = await visible.json<{ totals: { uploads: number; downloads: number }; daily: Array<{ synthetic: number }> }>();
+    expect(payload.totals.uploads).toBeGreaterThanOrEqual(1);
+    expect(payload.totals.downloads).toBeGreaterThanOrEqual(1);
+    expect(payload.daily.some((row) => row.synthetic === 1)).toBe(true);
+  });
 });
 
-async function issueKey(owner: string): Promise<{ id: string; token: string }> {
-  const response = await SELF.fetch("https://example.test/v1/admin/api-keys", { method: "POST", headers: adminHeaders, body: JSON.stringify({ owner, scopes: ["artifact:write", "artifact:read", "artifact:delete", "share:create"] }) });
+async function issueKey(owner: string, synthetic = true): Promise<{ id: string; token: string }> {
+  const response = await SELF.fetch("https://example.test/v1/admin/api-keys", { method: "POST", headers: adminHeaders, body: JSON.stringify({ owner, synthetic, scopes: ["artifact:write", "artifact:read", "artifact:delete", "share:create"] }) });
   expect(response.status).toBe(201);
   return response.json();
 }

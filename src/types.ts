@@ -6,7 +6,9 @@ export type Retention = "7d" | "30d" | "retain";
 
 export interface AuthContext {
   id: string;
+  principal_id: string;
   owner: string;
+  synthetic: boolean;
   scopes: Scope[];
 }
 
@@ -18,6 +20,8 @@ export interface AdminContext {
 export interface ArtifactRow {
   id: string;
   api_key_id: string;
+  principal_id: string;
+  synthetic: number;
   filename: string;
   content_type: string;
   size_bytes: number;

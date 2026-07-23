@@ -102,6 +102,7 @@ async function purgeHistory(env: AppEnv, timestamp: number): Promise<number> {
   const uploadBefore = timestamp - 7 * 86_400;
   const results = await env.DB.batch([
     env.DB.prepare("DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs WHERE created_at < ?1 ORDER BY created_at LIMIT 500)").bind(auditBefore),
+    env.DB.prepare("DELETE FROM usage_daily WHERE day < date(?1, 'unixepoch', '-90 days') OR (synthetic = 1 AND day < date(?1, 'unixepoch', '-30 days'))").bind(timestamp),
     env.DB.prepare("DELETE FROM upload_parts WHERE upload_id IN (SELECT id FROM upload_sessions WHERE status != 'active' AND COALESCE(completed_at, last_activity_at, created_at) < ?1 LIMIT 500)").bind(uploadBefore),
     env.DB.prepare("DELETE FROM upload_sessions WHERE id IN (SELECT id FROM upload_sessions WHERE status != 'active' AND COALESCE(completed_at, last_activity_at, created_at) < ?1 LIMIT 500)").bind(uploadBefore),
     env.DB.prepare("DELETE FROM shares WHERE id IN (SELECT id FROM shares WHERE COALESCE(revoked_at, expires_at) IS NOT NULL AND COALESCE(revoked_at, expires_at) < ?1 ORDER BY COALESCE(revoked_at, expires_at) LIMIT 500)").bind(tombstoneBefore),

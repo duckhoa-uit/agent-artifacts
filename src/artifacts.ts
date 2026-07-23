@@ -2,6 +2,7 @@ import type { AppEnv, ArtifactRow, AuthContext, Retention } from "./types";
 import { audit, auditStatement, createShare, getArtifact } from "./db";
 import { requireScope } from "./auth";
 import { artifactInputSchema, multipartInputSchema, parseJson, shareInputSchema } from "./schema";
+import { trackUsage } from "./usage";
 import { artifactHeaders, error, etagMatches, id, json, now, parseRange, safeFilename, sha256 } from "./utils";
 
 interface ArtifactInput {
@@ -20,6 +21,7 @@ interface UploadSession {
   id: string;
   artifact_id: string;
   api_key_id: string;
+  principal_id: string;
   r2_key: string;
   r2_upload_id: string;
   total_parts: number;
@@ -65,6 +67,7 @@ export async function createSmallArtifact(request: Request, env: AppEnv, ctx: Ex
     await env.ARTIFACTS.delete(r2Key);
     throw cause;
   }
+  trackUsage(ctx, env, { principalId: auth.principal_id, synthetic: auth.synthetic, eventType: "upload", bytes: stored.size });
   return json(artifactResponse(request, artifactId, stored.size, input, auth), 201);
 }
 
@@ -85,15 +88,15 @@ export async function initMultipart(request: Request, env: AppEnv, ctx: Executio
   const retention = resolveRetention(input.retention);
   try {
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO artifacts (id, api_key_id, filename, content_type, size_bytes, sha256, r2_key, source_agent, repo, pr_number, task_id, purpose, created_at, retention, expires_at, checksum_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 'client_asserted')").bind(
-        artifactId, auth.id, safeFilename(input.filename), input.content_type, input.size_bytes, input.sha256, r2Key,
+      env.DB.prepare("INSERT INTO artifacts (id, api_key_id, principal_id, synthetic, filename, content_type, size_bytes, sha256, r2_key, source_agent, repo, pr_number, task_id, purpose, created_at, retention, expires_at, checksum_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 'client_asserted')").bind(
+        artifactId, auth.id, auth.principal_id, auth.synthetic ? 1 : 0, safeFilename(input.filename), input.content_type, input.size_bytes, input.sha256, r2Key,
         input.source_agent ?? null, input.repo ?? null, input.pr_number ?? null, input.task_id ?? null, input.purpose ?? null,
         createdAt, retention, retentionExpiry(retention, createdAt),
       ),
-      env.DB.prepare("INSERT INTO upload_sessions (id, artifact_id, api_key_id, r2_key, r2_upload_id, total_parts, status, created_at, last_activity_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?7)").bind(
-        sessionId, artifactId, auth.id, r2Key, multipart.uploadId, totalParts, createdAt,
+      env.DB.prepare("INSERT INTO upload_sessions (id, artifact_id, api_key_id, principal_id, r2_key, r2_upload_id, total_parts, status, created_at, last_activity_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?8)").bind(
+        sessionId, artifactId, auth.id, auth.principal_id, r2Key, multipart.uploadId, totalParts, createdAt,
       ),
-      auditStatement(env, "artifact.upload.init", { apiKeyId: auth.id, artifactId, metadata: { mode: "multipart", total_parts: totalParts, expected_size: input.size_bytes } }),
+      auditStatement(env, "artifact.upload.init", { apiKeyId: auth.id, principalId: auth.principal_id, synthetic: auth.synthetic, artifactId, metadata: { mode: "multipart", total_parts: totalParts, expected_size: input.size_bytes } }),
     ]);
   } catch (cause) {
     await multipart.abort().catch(() => undefined);
@@ -108,8 +111,8 @@ export async function uploadPart(request: Request, env: AppEnv, ctx: ExecutionCo
   const partNumber = Number(partNumberValue);
   if (!Number.isInteger(partNumber) || partNumber < 1 || !request.body) return error("Invalid part or empty body", 400);
   const session = await env.DB.prepare(
-    "SELECT s.*, a.size_bytes FROM upload_sessions s JOIN artifacts a ON a.id = s.artifact_id WHERE s.id = ?1 AND s.api_key_id = ?2 AND s.status = 'active' AND s.operation IS NULL AND a.deleted_at IS NULL",
-  ).bind(sessionId, auth.id).first<UploadSession & { size_bytes: number }>();
+    "SELECT s.*, a.size_bytes FROM upload_sessions s JOIN artifacts a ON a.id = s.artifact_id WHERE s.id = ?1 AND s.principal_id = ?2 AND s.status = 'active' AND s.operation IS NULL AND a.deleted_at IS NULL",
+  ).bind(sessionId, auth.principal_id).first<UploadSession & { size_bytes: number }>();
   if (!session) return error("Active upload session not found", 404, "not_found");
   if (partNumber > session.total_parts) return error("Part number exceeds the upload plan", 400);
   const partSize = Number(env.MULTIPART_PART_SIZE_BYTES);
@@ -133,7 +136,7 @@ export async function uploadPart(request: Request, env: AppEnv, ctx: ExecutionCo
 export async function completeMultipart(request: Request, env: AppEnv, ctx: ExecutionContext, sessionId: string): Promise<Response> {
   const auth = await requireScope(request, env, ctx, "artifact:write");
   if (auth instanceof Response) return auth;
-  const session = await env.DB.prepare("SELECT * FROM upload_sessions WHERE id = ?1 AND api_key_id = ?2").bind(sessionId, auth.id).first<UploadSession>();
+  const session = await env.DB.prepare("SELECT * FROM upload_sessions WHERE id = ?1 AND principal_id = ?2").bind(sessionId, auth.principal_id).first<UploadSession>();
   if (!session) return error("Upload session not found", 404, "not_found");
   if (session.status === "aborted") return error("Upload session was aborted", 409, "upload_aborted");
   if (session.status === "completed") return completedArtifactResponse(request, env, session.artifact_id, auth);
@@ -185,15 +188,16 @@ export async function completeMultipart(request: Request, env: AppEnv, ctx: Exec
   await env.DB.batch([
     env.DB.prepare("UPDATE upload_sessions SET status = 'completed', operation = NULL, operation_started_at = NULL, completed_at = ?1, last_activity_at = ?1 WHERE id = ?2 AND operation = 'completing'")
       .bind(completedAt, sessionId),
-    auditStatement(env, "artifact.upload.complete", { apiKeyId: auth.id, artifactId: artifact.id, metadata: { mode: "multipart", size_bytes: stored.size, checksum: "client_asserted" } }),
+    auditStatement(env, "artifact.upload.complete", { apiKeyId: auth.id, principalId: auth.principal_id, synthetic: auth.synthetic, artifactId: artifact.id, metadata: { mode: "multipart", size_bytes: stored.size, checksum: "client_asserted" } }),
   ]);
+  trackUsage(ctx, env, { principalId: auth.principal_id, synthetic: auth.synthetic, eventType: "upload", bytes: stored.size });
   return completedArtifactResponse(request, env, artifact.id, auth);
 }
 
 export async function abortMultipart(request: Request, env: AppEnv, ctx: ExecutionContext, sessionId: string): Promise<Response> {
   const auth = await requireScope(request, env, ctx, "artifact:write");
   if (auth instanceof Response) return auth;
-  const session = await env.DB.prepare("SELECT * FROM upload_sessions WHERE id = ?1 AND api_key_id = ?2 AND status = 'active'").bind(sessionId, auth.id).first<UploadSession>();
+  const session = await env.DB.prepare("SELECT * FROM upload_sessions WHERE id = ?1 AND principal_id = ?2 AND status = 'active'").bind(sessionId, auth.principal_id).first<UploadSession>();
   if (!session) return error("Active upload session not found", 404, "not_found");
   if (session.operation) return error(`Upload session is already ${session.operation}`, 409, "upload_state_changed");
   if (!await claimUploadTransition(env, session.id, "aborting")) return error("Upload session state changed; retry abort", 409, "upload_state_changed");
@@ -205,7 +209,7 @@ export async function abortMultipart(request: Request, env: AppEnv, ctx: Executi
     return error("Multipart abort failed; retry later", 503, "upload_abort_failed");
   }
   await markUploadAborted(env, session);
-  await audit(env, "artifact.upload.abort", { apiKeyId: auth.id, artifactId: session.artifact_id });
+  await audit(env, "artifact.upload.abort", { apiKeyId: auth.id, principalId: auth.principal_id, synthetic: auth.synthetic, artifactId: session.artifact_id });
   return new Response(null, { status: 204 });
 }
 
@@ -213,9 +217,9 @@ export async function getArtifactResponse(request: Request, env: AppEnv, ctx: Ex
   const auth = await requireScope(request, env, ctx, "artifact:read");
   if (auth instanceof Response) return auth;
   const artifact = await getArtifact(env, artifactId);
-  if (!artifact || artifact.api_key_id !== auth.id) return error("Artifact not found", 404, "not_found");
+  if (!artifact || artifact.principal_id !== auth.principal_id) return error("Artifact not found", 404, "not_found");
   const response = await serveArtifact(request, env, artifact);
-  if (shouldAuditDownload(request, response)) ctx.waitUntil(audit(env, "artifact.download", { apiKeyId: auth.id, artifactId, metadata: { range: response.status === 206, method: request.method } }));
+  if (shouldAuditDownload(request, response)) trackUsage(ctx, env, { principalId: auth.principal_id, synthetic: auth.synthetic, eventType: "download", bytes: Number(response.headers.get("content-length") ?? artifact.size_bytes) });
   return response;
 }
 
@@ -223,9 +227,9 @@ export async function deleteArtifact(request: Request, env: AppEnv, ctx: Executi
   const auth = await requireScope(request, env, ctx, "artifact:delete");
   if (auth instanceof Response) return auth;
   const artifact = await getArtifact(env, artifactId);
-  if (!artifact || artifact.api_key_id !== auth.id) return error("Artifact not found", 404, "not_found");
+  if (!artifact || artifact.principal_id !== auth.principal_id) return error("Artifact not found", 404, "not_found");
   await deleteArtifactData(env, artifact);
-  await audit(env, "artifact.delete", { apiKeyId: auth.id, artifactId });
+  await audit(env, "artifact.delete", { apiKeyId: auth.id, principalId: auth.principal_id, synthetic: auth.synthetic, artifactId });
   return new Response(null, { status: 204 });
 }
 
@@ -233,22 +237,23 @@ export async function createArtifactShare(request: Request, env: AppEnv, ctx: Ex
   const auth = await requireScope(request, env, ctx, "share:create");
   if (auth instanceof Response) return auth;
   const artifact = await getArtifact(env, artifactId);
-  if (!artifact || artifact.api_key_id !== auth.id) return error("Artifact not found", 404, "not_found");
+  if (!artifact || artifact.principal_id !== auth.principal_id) return error("Artifact not found", 404, "not_found");
   const body = request.headers.get("content-length") === "0" ? { retention: "temporary" as const } : await parseJson(request, shareInputSchema);
   if ("response" in body) return body.response;
   const value = "data" in body ? body.data : body;
   const expiresAt = shareExpiry(value.retention, "expires_in_seconds" in value ? value.expires_in_seconds : undefined, artifact, env);
-  const share = await createShare(env, artifactId, { apiKeyId: auth.id }, expiresAt);
+  const share = await createShare(env, artifactId, { apiKeyId: auth.id, principalId: auth.principal_id, synthetic: auth.synthetic }, expiresAt);
+  trackUsage(ctx, env, { principalId: auth.principal_id, synthetic: auth.synthetic, eventType: "share" });
   return json({ id: share.id, artifact_id: artifactId, url: new URL(`/s/${share.token}/${encodeURIComponent(artifact.filename)}`, request.url).toString(), expires_at: expiresAt }, 201);
 }
 
 export async function revokeShare(request: Request, env: AppEnv, ctx: ExecutionContext, shareId: string): Promise<Response> {
   const auth = await requireScope(request, env, ctx, "share:create");
   if (auth instanceof Response) return auth;
-  const share = await env.DB.prepare("SELECT id, artifact_id, created_by_key_id FROM shares WHERE id = ?1").bind(shareId).first<{ id: string; artifact_id: string; created_by_key_id: string | null }>();
-  if (!share || share.created_by_key_id !== auth.id) return error("Share not found", 404, "not_found");
+  const share = await env.DB.prepare("SELECT id, artifact_id, created_by_key_id, created_by_principal_id FROM shares WHERE id = ?1").bind(shareId).first<{ id: string; artifact_id: string; created_by_key_id: string | null; created_by_principal_id: string | null }>();
+  if (!share || share.created_by_principal_id !== auth.principal_id) return error("Share not found", 404, "not_found");
   await env.DB.prepare("UPDATE shares SET revoked_at = ?1 WHERE id = ?2").bind(now(), shareId).run();
-  await audit(env, "share.revoke", { apiKeyId: auth.id, artifactId: share.artifact_id, shareId });
+  await audit(env, "share.revoke", { apiKeyId: auth.id, principalId: auth.principal_id, synthetic: auth.synthetic, artifactId: share.artifact_id, shareId });
   return new Response(null, { status: 204 });
 }
 
@@ -258,7 +263,7 @@ export async function getSharedArtifact(request: Request, env: AppEnv, ctx: Exec
   const artifact = await getArtifact(env, share.artifact_id);
   if (!artifact) return error("Artifact not found", 404, "not_found");
   const response = await serveArtifact(request, env, artifact);
-  if (shouldAuditDownload(request, response)) ctx.waitUntil(audit(env, "share.download", { artifactId: artifact.id, shareId: share.id, metadata: { range: response.status === 206, method: request.method } }));
+  if (shouldAuditDownload(request, response)) trackUsage(ctx, env, { principalId: artifact.principal_id, synthetic: Boolean(artifact.synthetic), eventType: "download", bytes: Number(response.headers.get("content-length") ?? artifact.size_bytes) });
   return response;
 }
 
@@ -318,12 +323,12 @@ async function insertArtifact(env: AppEnv, artifactId: string, auth: AuthContext
   const createdAt = now();
   const retention = resolveRetention(input.retention);
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO artifacts (id, api_key_id, filename, content_type, size_bytes, sha256, r2_key, source_agent, repo, pr_number, task_id, purpose, created_at, retention, expires_at, checksum_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)").bind(
-      artifactId, auth.id, safeFilename(input.filename), input.content_type, sizeBytes, input.sha256 ?? null, r2Key,
+    env.DB.prepare("INSERT INTO artifacts (id, api_key_id, principal_id, synthetic, filename, content_type, size_bytes, sha256, r2_key, source_agent, repo, pr_number, task_id, purpose, created_at, retention, expires_at, checksum_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)").bind(
+      artifactId, auth.id, auth.principal_id, auth.synthetic ? 1 : 0, safeFilename(input.filename), input.content_type, sizeBytes, input.sha256 ?? null, r2Key,
       input.source_agent ?? null, input.repo ?? null, input.pr_number ?? null, input.task_id ?? null, input.purpose ?? null,
       createdAt, retention, retentionExpiry(retention, createdAt), checksumStatus,
     ),
-    auditStatement(env, "artifact.upload", { apiKeyId: auth.id, artifactId, metadata: { mode: "small", size_bytes: sizeBytes, checksum: checksumStatus } }),
+    auditStatement(env, "artifact.upload", { apiKeyId: auth.id, principalId: auth.principal_id, synthetic: auth.synthetic, artifactId, metadata: { mode: "small", size_bytes: sizeBytes, checksum: checksumStatus } }),
   ]);
 }
 

@@ -37,6 +37,7 @@ async function loadView(view) {
   if (view === "keys") await loadKeys();
   if (view === "artifacts") await loadArtifacts();
   if (view === "shares") await loadShares();
+  if (view === "analytics") await loadAnalytics();
   if (view === "audit") await loadAudit();
 }
 
@@ -68,6 +69,16 @@ async function loadShares() {
   renderPager("shares", total, data.length);
 }
 
+async function loadAnalytics() {
+  const days = encodeURIComponent($("#analyticsDays").value);
+  const synthetic = $("#analyticsSynthetic").checked ? "&include_synthetic=true" : "";
+  const data = await api(`/v1/admin/analytics?days=${days}${synthetic}`);
+  const values = [["Uploads", data.totals.uploads], ["Downloads", data.totals.downloads], ["Shares", data.totals.shares], ["Uploaded", bytes(data.totals.bytes_uploaded)], ["Downloaded", bytes(data.totals.bytes_downloaded)]];
+  $("#analyticsMetrics").innerHTML = values.map(([label, value]) => `<article class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></article>`).join("");
+  $("#analyticsDaily").innerHTML = data.daily.length ? data.daily.map((row) => `<tr><td class="mono">${escapeHtml(row.day)}</td><td>${escapeHtml(row.event_type)}</td><td class="mono">${escapeHtml(String(row.count))}</td><td class="mono">${escapeHtml(bytes(row.bytes))}</td><td><span class="state ${row.synthetic ? "bad" : ""}">${row.synthetic ? "Synthetic" : "Production"}</span></td></tr>`).join("") : rowEmpty(5, "No usage recorded for this window.");
+  $("#analyticsOwners").innerHTML = data.principals.length ? data.principals.map((row) => `<tr><td><strong>${escapeHtml(row.owner)}</strong><small class="mono">${escapeHtml(row.principal_id)}</small></td><td class="mono">${escapeHtml(String(row.count))}</td><td class="mono">${escapeHtml(bytes(row.bytes))}</td><td><span class="state ${row.synthetic ? "bad" : ""}">${row.synthetic ? "Synthetic" : "Production"}</span></td></tr>`).join("") : rowEmpty(4, "No principals recorded for this window.");
+}
+
 async function loadAudit() {
   const { data, total } = await api(`/v1/admin/audit-logs?limit=${pageSize}&offset=${state.offsets.audit}`);
   $("#auditTable").innerHTML = data.length ? data.map((event) => `<tr><td class="mono">${date(event.created_at)}</td><td><strong>${escapeHtml(event.event_type)}</strong></td><td>${escapeHtml(event.actor_id || event.api_key_id || "system")}<small>${escapeHtml(event.actor_type || "")}</small></td><td class="mono">${escapeHtml(event.artifact_id || "—")}</td><td class="mono">${escapeHtml(event.metadata || "—")}</td></tr>`).join("") : rowEmpty(5, "No audit events.");
@@ -81,10 +92,12 @@ $("#authButton").addEventListener("click", () => $("#authDialog").showModal());
 $("#saveToken").addEventListener("click", (event) => { event.preventDefault(); state.token = $("#adminToken").value.trim(); sessionStorage.setItem("artifactAdminToken", state.token); $("#authDialog").close(); connect(); });
 $("#newKeyButton").addEventListener("click", () => $("#keyDialog").showModal());
 $("#keyDialog [data-close]").addEventListener("click", () => $("#keyDialog").close());
-$("#keyForm").addEventListener("submit", async (event) => { event.preventDefault(); const formElement = event.currentTarget; try { const form = new FormData(formElement); const result = await api("/v1/admin/api-keys", { method:"POST", body:JSON.stringify({ owner:form.get("owner"), scopes:form.getAll("scope") }) }); $("#keyDialog").close(); formElement.reset(); $("#secretValue").textContent = result.token; $("#secretDialog").showModal(); await loadKeys(); } catch (error) { handle(error); } });
+$("#keyForm").addEventListener("submit", async (event) => { event.preventDefault(); const formElement = event.currentTarget; try { const form = new FormData(formElement); const result = await api("/v1/admin/api-keys", { method:"POST", body:JSON.stringify({ owner:form.get("owner"), scopes:form.getAll("scope"), synthetic:form.has("synthetic") }) }); $("#keyDialog").close(); formElement.reset(); $("#secretValue").textContent = result.token; $("#secretDialog").showModal(); await loadKeys(); } catch (error) { handle(error); } });
 $("#copySecret").addEventListener("click", async () => { await navigator.clipboard.writeText($("#secretValue").textContent); toast("API key copied."); });
 $("#closeSecret").addEventListener("click", () => { $("#secretValue").textContent = ""; $("#secretDialog").close(); });
 $("#artifactSearch").addEventListener("input", debounce(() => { state.offsets.artifacts = 0; loadArtifacts().catch(handle); }, 250));
+$("#analyticsDays").addEventListener("change", () => loadAnalytics().catch(handle));
+$("#analyticsSynthetic").addEventListener("change", () => loadAnalytics().catch(handle));
 
 document.addEventListener("click", async (event) => {
   const revokeKey = event.target.closest("[data-revoke-key]");

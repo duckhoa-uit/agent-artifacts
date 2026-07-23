@@ -8,7 +8,8 @@ Private artifact storage for Codex, Claude, Hermes, and automation workflows. A 
 - SHA-256-verified direct uploads and size-validated R2 multipart uploads selected from the Worker's advertised capabilities.
 - GET, HEAD, Range, ETag conditionals, private artifacts, and revocable opaque share URLs.
 - `7d`, `30d`, and `retain` artifact policies with hourly cleanup of expired artifacts, stale multipart sessions, and retryable R2 deletion reconciliation.
-- Cloudflare Access-aware admin console at `/admin` for keys, artifacts, shares, overview metrics, and audit events.
+- Cloudflare Access-aware admin console at `/admin` for keys, artifacts, shares, usage analytics, overview metrics, and audit events.
+- Stable principal ownership across API-key rotation, with opt-in synthetic markers so E2E and smoke traffic stays out of production usage totals.
 - Sandboxed artifact delivery: active document types download instead of executing under the admin origin.
 - One-time raw key reveal; D1 stores only a SHA-256 hash and short prefix.
 - A self-contained Agent Skills package for artifact operations, GitHub PR evidence, and Hermes media delivery.
@@ -143,7 +144,7 @@ they created.
 
 ## Verification
 
-`npm test` runs unit and Worker-runtime integration tests against isolated local D1/R2 bindings. `npm run e2e` runs the full deployed API lifecycle and always attempts cleanup. Production E2E requires `ARTIFACTS_URL` plus either `ARTIFACTS_E2E_ADMIN_TOKEN` or the `ARTIFACTS_E2E_ACCESS_CLIENT_ID` / `ARTIFACTS_E2E_ACCESS_CLIENT_SECRET` Cloudflare Access service-token pair.
+`npm test` runs unit and Worker-runtime integration tests against isolated local D1/R2 bindings. `npm run e2e` runs the full deployed API lifecycle and always attempts cleanup, including key rotation, admin analytics, range/conditional reads, share revocation, and cleanup. Production E2E requires `ARTIFACTS_URL` plus either `ARTIFACTS_E2E_ADMIN_TOKEN` or the `ARTIFACTS_E2E_ACCESS_CLIENT_ID` / `ARTIFACTS_E2E_ACCESS_CLIENT_SECRET` Cloudflare Access service-token pair.
 
 Hourly cleanup retries interrupted R2 work, retains audit history for 90 days,
 and purges reconciled tombstones after 30 days.
