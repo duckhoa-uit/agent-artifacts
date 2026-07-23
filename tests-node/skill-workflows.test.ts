@@ -66,6 +66,7 @@ else console.log(JSON.stringify({ id: 1 }));
         ...fixture.env,
         PATH: `${bin}${delimiter}${process.env.PATH}`,
         FAKE_GH_CALLS: calls,
+        GITHUB_REPOSITORY: "",
       }));
       expect(output).toMatchObject({ repo: "owner/repo", pr: 7, updated_comment: false });
       const ghCalls = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
