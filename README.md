@@ -23,6 +23,36 @@ npm run dev
 
 Put `ADMIN_TOKEN=...` in `.dev.vars` for local dashboard use. Never commit `.dev.vars`, agent keys, or raw tokens. The dashboard keeps a break-glass token in `sessionStorage`, not persistent browser storage.
 
+## Environment variables
+
+The shared `.env.example` intentionally contains only the Worker URL. Keep the
+other values in the environment where they are used, not in the repository.
+
+| Variable | Used by | Required | Purpose |
+| --- | --- | --- | --- |
+| `ARTIFACTS_URL` | CLI, setup script, E2E | Yes for integrations | Deployed Worker URL. |
+| `ARTIFACTS_API_KEY` | `artifactctl` and agent skills | For private artifact operations | Profile-scoped key created in the admin UI. |
+| `ADMIN_TOKEN` | Worker secret, local admin UI | Optional with Cloudflare Access | Break-glass admin authentication. |
+| `MAX_SMALL_UPLOAD_BYTES` | Worker | Yes | Maximum size for a direct upload. |
+| `MULTIPART_PART_SIZE_BYTES` | Worker | Yes | Size of each multipart upload part. |
+| `DEFAULT_SHARE_TTL_SECONDS` | Worker | Yes | Default lifetime of temporary share links. |
+| `UPLOAD_SESSION_TTL_SECONDS` | Worker | Yes | Age after which inactive multipart sessions are cleaned up. |
+| `ACCESS_TEAM_DOMAIN` | Worker | Yes for Access admin | Cloudflare Access team domain used to verify JWTs. |
+| `ACCESS_AUDIENCES` | Worker | Yes for Access admin | Comma-separated audiences for the protected admin applications. |
+| `CLOUDFLARE_ACCOUNT_ID` | Wrangler and `configure-access.mjs` | Deploy/setup only | Cloudflare account targeted by the operation. |
+| `CLOUDFLARE_API_TOKEN` | Wrangler and `configure-access.mjs` | Deploy/setup only | Cloudflare API credential. |
+| `ACCESS_ALLOWED_EMAIL` | `configure-access.mjs` | Access setup only | Email granted the admin Access policy. |
+| `ARTIFACTS_E2E_ADMIN_TOKEN` | `npm run e2e` | One E2E auth option | Break-glass credential for production E2E. |
+| `ARTIFACTS_E2E_ACCESS_CLIENT_ID` | `npm run e2e` | Pair, one E2E auth option | Cloudflare Access service-token client ID. |
+| `ARTIFACTS_E2E_ACCESS_CLIENT_SECRET` | `npm run e2e` | Pair, one E2E auth option | Cloudflare Access service-token client secret. |
+| `HERMES_GATEWAY_MEDIA_URL` | `hermes-gateway-media.mjs` | Optional integration | Endpoint that receives shared-media metadata. |
+| `HERMES_GATEWAY_TOKEN` | `hermes-gateway-media.mjs` | Optional with gateway URL | Bearer credential for the optional Hermes gateway endpoint. |
+| `GITHUB_REPOSITORY` | `github-pr-evidence.mjs` | Optional | Repository override; otherwise the CLI asks `gh` for the current repository. |
+
+Production E2E needs `ARTIFACTS_URL` and either `ARTIFACTS_E2E_ADMIN_TOKEN` or
+the Access service-token pair. The E2E variables are not Worker runtime
+configuration.
+
 ## Deploy
 
 Create the private R2 bucket and D1 database named in `wrangler.jsonc`, then run:

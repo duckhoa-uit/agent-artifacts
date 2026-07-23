@@ -79,7 +79,7 @@ export async function initMultipart(request: Request, env: AppEnv, ctx: Executio
   const r2Key = `artifacts/${artifactId}`;
   const multipart = await env.ARTIFACTS.createMultipartUpload(r2Key, { httpMetadata: { contentType: input.content_type } });
   const createdAt = now();
-  const retention = resolveRetention(input.retention, env);
+  const retention = resolveRetention(input.retention);
   try {
     await env.DB.batch([
       env.DB.prepare("INSERT INTO artifacts (id, api_key_id, filename, content_type, size_bytes, sha256, r2_key, source_agent, repo, pr_number, task_id, purpose, created_at, retention, expires_at, checksum_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 'client_asserted')").bind(
@@ -264,7 +264,7 @@ function headersInput(headers: Headers): Record<string, unknown> {
 
 async function insertArtifact(env: AppEnv, artifactId: string, auth: AuthContext, r2Key: string, sizeBytes: number, input: ArtifactInput, checksumStatus: ArtifactRow["checksum_status"]): Promise<void> {
   const createdAt = now();
-  const retention = resolveRetention(input.retention, env);
+  const retention = resolveRetention(input.retention);
   await env.DB.prepare("INSERT INTO artifacts (id, api_key_id, filename, content_type, size_bytes, sha256, r2_key, source_agent, repo, pr_number, task_id, purpose, created_at, retention, expires_at, checksum_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)").bind(
     artifactId, auth.id, safeFilename(input.filename), input.content_type, sizeBytes, input.sha256 ?? null, r2Key,
     input.source_agent ?? null, input.repo ?? null, input.pr_number ?? null, input.task_id ?? null, input.purpose ?? null,
@@ -282,12 +282,12 @@ function artifactResponse(request: Request, artifactId: string, sizeBytes: numbe
   return {
     id: artifactId, filename: safeFilename(input.filename), content_type: input.content_type, size_bytes: sizeBytes,
     sha256: input.sha256 ?? null, url: new URL(`/v1/artifacts/${artifactId}`, request.url).toString(), owner: auth.owner,
-    retention: input.retention ?? null, expires_at: "expires_at" in input ? input.expires_at : retentionExpiry(resolveRetention(input.retention, undefined), now()),
+    retention: input.retention ?? null, expires_at: "expires_at" in input ? input.expires_at : retentionExpiry(resolveRetention(input.retention), now()),
   };
 }
 
-function resolveRetention(value: Retention | undefined, env?: AppEnv): Retention {
-  const configured = value ?? env?.DEFAULT_ARTIFACT_RETENTION ?? "30d";
+function resolveRetention(value: Retention | undefined): Retention {
+  const configured = value ?? "30d";
   return configured === "7d" || configured === "retain" ? configured : "30d";
 }
 

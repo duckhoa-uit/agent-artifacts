@@ -11,8 +11,6 @@ export default {
     try {
       const url = new URL(request.url);
       const path = url.pathname.replace(/\/$/, "") || "/";
-      if (request.method === "OPTIONS") return preflight(request, env);
-
       if (path === "/admin" || path.startsWith("/admin/")) {
         if (accessConfigured(env)) {
           const admin = await requireAdmin(request, env);
@@ -23,7 +21,7 @@ export default {
 
       let response: Response;
       if (path === "/healthz" && request.method === "GET") {
-        response = json({ ok: true, service: "agent-artifacts", environment: env.ENVIRONMENT });
+        response = json({ ok: true, service: "agent-artifacts" });
       } else if (path.startsWith("/v1/admin/")) {
         const admin = await requireAdmin(request, env);
         response = admin instanceof Response ? admin : await handleAdmin(request, env, admin, path);
@@ -51,7 +49,7 @@ export default {
       } else {
         response = error("Route not found", 404, "not_found");
       }
-      return withCors(withRequestId(response, requestId), request, env);
+      return withRequestId(response, requestId);
     } catch (cause) {
       console.error(JSON.stringify({ event: "request.error", request_id: requestId, message: cause instanceof Error ? cause.message : String(cause) }));
       return withRequestId(error("Internal server error", 500, "internal_error"), requestId);
@@ -72,25 +70,4 @@ function withRequestId(response: Response, requestId: string): Response {
   headers.set("permissions-policy", "camera=(), microphone=(), geolocation=()");
   headers.set("content-security-policy", "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; img-src 'self' blob: data:; object-src 'none'");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-}
-
-function withCors(response: Response, request: Request, env: AppEnv): Response {
-  const origin = request.headers.get("origin");
-  if (!origin || !env.CORS_ORIGIN || origin !== env.CORS_ORIGIN) return response;
-  const headers = new Headers(response.headers);
-  headers.set("access-control-allow-origin", origin);
-  headers.set("vary", "Origin");
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-}
-
-function preflight(request: Request, env: AppEnv): Response {
-  const origin = request.headers.get("origin");
-  if (!origin || !env.CORS_ORIGIN || origin !== env.CORS_ORIGIN) return new Response(null, { status: 403 });
-  return new Response(null, { status: 204, headers: {
-    "access-control-allow-origin": origin,
-    "access-control-allow-headers": "authorization, content-type, range, x-filename, x-artifact-sha256, x-artifact-retention, x-source-agent, x-repo, x-pr-number, x-task-id, x-purpose",
-    "access-control-allow-methods": "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS",
-    "access-control-max-age": "86400",
-    vary: "Origin",
-  } });
 }

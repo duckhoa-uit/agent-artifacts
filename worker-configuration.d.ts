@@ -5,15 +5,12 @@ interface __BaseEnv_Env {
 	ARTIFACTS: R2Bucket;
 	DB: D1Database;
 	ASSETS: Fetcher;
-	ENVIRONMENT: "production";
 	MAX_SMALL_UPLOAD_BYTES: "52428800";
 	MULTIPART_PART_SIZE_BYTES: "20971520";
 	DEFAULT_SHARE_TTL_SECONDS: "604800";
-	DEFAULT_ARTIFACT_RETENTION: "30d";
 	UPLOAD_SESSION_TTL_SECONDS: "86400";
 	ACCESS_TEAM_DOMAIN: "";
 	ACCESS_AUDIENCES: "";
-	CORS_ORIGIN: "";
 	ADMIN_TOKEN: string;
 }
 declare namespace Cloudflare {
@@ -27,7 +24,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "ENVIRONMENT" | "MAX_SMALL_UPLOAD_BYTES" | "MULTIPART_PART_SIZE_BYTES" | "DEFAULT_SHARE_TTL_SECONDS" | "DEFAULT_ARTIFACT_RETENTION" | "UPLOAD_SESSION_TTL_SECONDS" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUDIENCES" | "CORS_ORIGIN" | "ADMIN_TOKEN">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "MAX_SMALL_UPLOAD_BYTES" | "MULTIPART_PART_SIZE_BYTES" | "DEFAULT_SHARE_TTL_SECONDS" | "UPLOAD_SESSION_TTL_SECONDS" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUDIENCES" | "ADMIN_TOKEN">> {}
 }
 
 // Begin runtime types
