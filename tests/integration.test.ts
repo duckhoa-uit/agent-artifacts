@@ -17,6 +17,14 @@ describe("artifact service", () => {
 
     const rotated = await issueKey("agent-one");
     expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(rotated.token) })).status).toBe(200);
+    const shareResponse = await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}/shares`, {
+      method: "POST",
+      headers: { ...bearer(rotated.token), "content-type": "application/json" },
+      body: JSON.stringify({ retention: "temporary" }),
+    });
+    expect(shareResponse.status).toBe(201);
+    const share = await shareResponse.json<{ id: string }>();
+    expect((await SELF.fetch(`https://example.test/v1/shares/${share.id}`, { method: "DELETE", headers: bearer(rotated.token) })).status).toBe(204);
 
     expect((await SELF.fetch(`https://example.test/v1/admin/api-keys/${first.id}`, { method: "DELETE", headers: adminHeaders })).status).toBe(204);
     expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(first.token) })).status).toBe(401);
