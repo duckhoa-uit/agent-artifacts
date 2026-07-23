@@ -44,15 +44,6 @@ export function hex(bytes: Uint8Array): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export function constantTimeEqual(left: string, right: string): boolean {
-  const a = encoder.encode(left);
-  const b = encoder.encode(right);
-  let difference = a.length ^ b.length;
-  const length = Math.max(a.length, b.length);
-  for (let index = 0; index < length; index += 1) difference |= (a[index] ?? 0) ^ (b[index] ?? 0);
-  return difference === 0;
-}
-
 export function safeFilename(value: string | null | undefined): string {
   const cleaned = (value ?? "artifact").replace(/[\\/\0\r\n]/g, "_").trim();
   return cleaned.slice(0, 240) || "artifact";
@@ -80,15 +71,43 @@ export function parseRange(value: string | null, size: number): { offset: number
   return { offset, length: Math.min(end, size - 1) - offset + 1 };
 }
 
+export function etagMatches(value: string | null, etag: string, weak: boolean): boolean {
+  if (!value) return false;
+  if (value.trim() === "*") return true;
+  const normalize = (candidate: string) => weak ? candidate.trim().replace(/^W\//, "") : candidate.trim();
+  const expected = normalize(etag);
+  return value.split(",").some((candidate) => normalize(candidate) === expected);
+}
+
 export function artifactHeaders(artifact: { filename: string; content_type: string; size_bytes: number; sha256?: string | null }, etag?: string): Headers {
+  const inline = canPreviewInline(artifact.content_type);
   const headers = new Headers({
     "content-type": artifact.content_type,
-    "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(artifact.filename)}`,
+    "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(artifact.filename)}`,
     "accept-ranges": "bytes",
     "cache-control": "private, no-store",
     "content-length": String(artifact.size_bytes),
+    "content-security-policy": "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   });
   if (etag) headers.set("etag", etag);
   if (artifact.sha256) headers.set("x-artifact-sha256", artifact.sha256);
   return headers;
+}
+
+export function canPreviewInline(contentType: string): boolean {
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
+  return mediaType === "text/plain"
+    || mediaType === "application/json"
+    || mediaType === "image/png"
+    || mediaType === "image/jpeg"
+    || mediaType === "image/gif"
+    || mediaType === "image/webp"
+    || mediaType === "image/avif"
+    || mediaType === "video/mp4"
+    || mediaType === "video/webm"
+    || mediaType === "video/quicktime"
+    || mediaType === "audio/mpeg"
+    || mediaType === "audio/mp4"
+    || mediaType === "audio/ogg"
+    || mediaType === "audio/wav";
 }

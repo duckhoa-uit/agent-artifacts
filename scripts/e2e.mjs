@@ -11,9 +11,12 @@ if (!baseUrl || (!adminToken && !accessClientId)) throw new Error("ARTIFACTS_URL
 const resources = { keys: [], artifacts: [] };
 const cases = [];
 let failure;
+const cleanupFailures = [];
 try {
   const health = await request("GET", "/healthz");
   assert(health.ok === true, "healthz");
+  const capabilities = await request("GET", "/v1/capabilities");
+  assert(capabilities.max_small_upload_bytes > 0 && capabilities.multipart_part_size_bytes > 0, "upload capabilities");
   assert((await requestRaw("GET", "/admin/")).status === 200, "admin dashboard shell");
   assert(["break-glass", "cloudflare-access"].includes((await request("GET", "/v1/admin/session", undefined, adminToken)).mode), "admin session");
   cases.push("health-and-admin-dashboard");
@@ -54,7 +57,7 @@ try {
   assert((await requestRaw("GET", new URL(share.url).pathname)).status === 404, "share revoke");
   cases.push("share-create-range-revoke");
 
-  const partSize = 20 * 1024 * 1024;
+  const partSize = capabilities.multipart_part_size_bytes;
   const large = new Uint8Array(partSize + 17);
   large.fill(65);
   large.set(new TextEncoder().encode("multipart-e2e"), large.length - 13);
@@ -88,8 +91,13 @@ try {
 } catch (cause) {
   failure = cause;
 } finally {
-  for (const artifactId of resources.artifacts) await requestRaw("DELETE", `/v1/admin/artifacts/${artifactId}`, undefined, undefined, { authorization:`Bearer ${adminToken}` }).catch(() => undefined);
-  for (const keyId of resources.keys) await requestRaw("DELETE", `/v1/admin/api-keys/${keyId}`, undefined, undefined, { authorization:`Bearer ${adminToken}` }).catch(() => undefined);
+  for (const artifactId of resources.artifacts) await cleanup("artifact", artifactId, `/v1/admin/artifacts/${artifactId}`);
+  for (const keyId of resources.keys) await cleanup("key", keyId, `/v1/admin/api-keys/${keyId}`);
+}
+
+if (cleanupFailures.length) {
+  const cleanupError = new Error(`E2E cleanup failed: ${cleanupFailures.join("; ")}`);
+  failure = failure ? new AggregateError([failure, cleanupError], "E2E assertions and cleanup failed") : cleanupError;
 }
 
 if (failure) {
@@ -113,6 +121,14 @@ async function requestRaw(method, path, body, bearer, extra = {}) {
     headers["cf-access-client-secret"] = accessClientSecret;
   }
   return fetch(`${baseUrl}${path}`, { method, body, headers });
+}
+async function cleanup(type, id, path) {
+  try {
+    const response = await requestRaw("DELETE", path, undefined, undefined, { authorization:`Bearer ${adminToken}` });
+    if (response.status !== 204 && response.status !== 404) cleanupFailures.push(`${type} ${id}: ${response.status}`);
+  } catch (cause) {
+    cleanupFailures.push(`${type} ${id}: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
 }
 function uploadHeaders(filename, length, hash) { return { "content-type":"text/plain", "content-length":String(length), "x-filename":filename, "x-artifact-sha256":hash, "x-purpose":"e2e" }; }
 function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }

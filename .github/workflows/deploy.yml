@@ -6,6 +6,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: production
+  cancel-in-progress: false
+
 jobs:
   production:
     runs-on: ubuntu-latest
@@ -18,9 +22,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - run: npm run types:check
       - run: npm test
+      - run: npm run skill:validate
+      - run: npm run check
       - run: npm run db:migrate:remote
       - run: npm run deploy
+      - run: npm run e2e
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      ARTIFACTS_URL: ${{ vars.ARTIFACTS_URL }}
+      ARTIFACTS_E2E_ACCESS_CLIENT_ID: ${{ secrets.ARTIFACTS_E2E_ACCESS_CLIENT_ID }}
+      ARTIFACTS_E2E_ACCESS_CLIENT_SECRET: ${{ secrets.ARTIFACTS_E2E_ACCESS_CLIENT_SECRET }}

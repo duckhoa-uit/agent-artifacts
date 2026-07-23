@@ -34,6 +34,25 @@ describe("artifact service", () => {
     expect(row?.checksum_status).toBe("verified");
   });
 
+  it("forces active content to download under a sandboxed response", async () => {
+    const key = await issueKey("active-content-agent");
+    const body = new TextEncoder().encode("<script src='/admin/app.js'></script>");
+    const artifact = await upload(key.token, body, "payload.html", "30d", "text/html");
+    const shareResponse = await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}/shares`, {
+      method: "POST",
+      headers: { ...bearer(key.token), "content-type": "application/json" },
+      body: JSON.stringify({ retention: "temporary" }),
+    });
+    expect(shareResponse.status).toBe(201);
+    const share = await shareResponse.json<{ url: string }>();
+    const response = await SELF.fetch(share.url);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toMatch(/^attachment;/);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("content-security-policy")).toContain("sandbox");
+    expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
+  });
+
   it("rejects malformed multipart parts and makes completion idempotent", async () => {
     const key = await issueKey("multipart-agent");
     const size = Number(env.MULTIPART_PART_SIZE_BYTES) + 3;
@@ -42,7 +61,13 @@ describe("artifact service", () => {
       body: JSON.stringify({ filename: "large.bin", content_type: "application/octet-stream", size_bytes: size, sha256: "a".repeat(64), retention: "30d" }),
     });
     expect(initResponse.status).toBe(201);
-    const init = await initResponse.json<{ upload_id: string; part_size_bytes: number }>();
+    const init = await initResponse.json<{ upload_id: string; artifact_id: string; part_size_bytes: number }>();
+    const prematureShare = await SELF.fetch(`https://example.test/v1/artifacts/${init.artifact_id}/shares`, {
+      method: "POST",
+      headers: { ...bearer(key.token), "content-type": "application/json" },
+      body: JSON.stringify({ retention: "temporary" }),
+    });
+    expect(prematureShare.status).toBe(404);
     const invalid = new Uint8Array(2);
     const invalidResponse = await SELF.fetch(`https://example.test/v1/uploads/${init.upload_id}/parts/1`, { method: "PUT", headers: { ...bearer(key.token), "content-length": "2" }, body: invalid });
     expect(invalidResponse.status).toBe(422);
@@ -61,9 +86,11 @@ describe("artifact service", () => {
     const key = await issueKey("cleanup-agent");
     const artifact = await upload(key.token, new TextEncoder().encode("expired"), "expired.txt");
     await env.DB.prepare("UPDATE artifacts SET expires_at = 1 WHERE id = ?1").bind(artifact.id).run();
+    await env.DB.prepare("INSERT INTO audit_logs (event_type, created_at) VALUES ('old.event', 1)").run();
     const cleanup = await runCleanup(env);
     expect(cleanup.expiredArtifacts).toBe(1);
     expect(cleanup.reconciledObjects).toBe(0);
+    expect(cleanup.purgedRows).toBeGreaterThanOrEqual(1);
     expect(await env.ARTIFACTS.head(`artifacts/${artifact.id}`)).toBeNull();
     const purged = await env.DB.prepare("SELECT r2_deleted_at FROM artifacts WHERE id = ?1").bind(artifact.id).first<{ r2_deleted_at: number | null }>();
     expect(purged?.r2_deleted_at).toBeTypeOf("number");
@@ -75,6 +102,10 @@ describe("artifact service", () => {
     const adminCleanup = await SELF.fetch("https://example.test/v1/admin/cleanup", { method: "POST", headers: adminHeaders });
     expect(adminCleanup.status).toBe(200);
     expect(await adminCleanup.json()).toMatchObject({ reconciledObjects: 0 });
+
+    const inventory = await SELF.fetch("https://example.test/v1/admin/artifacts?limit=1&offset=0", { headers: adminHeaders });
+    expect(inventory.status).toBe(200);
+    expect(await inventory.json()).toMatchObject({ total: expect.any(Number), limit: 1, offset: 0 });
   });
 });
 
@@ -84,10 +115,10 @@ async function issueKey(owner: string): Promise<{ id: string; token: string }> {
   return response.json();
 }
 
-async function upload(token: string, body: Uint8Array, filename: string, retention = "30d"): Promise<{ id: string }> {
+async function upload(token: string, body: Uint8Array, filename: string, retention = "30d", contentType = "text/plain"): Promise<{ id: string }> {
   const bytes = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
   const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((value) => value.toString(16).padStart(2, "0")).join("");
-  const response = await SELF.fetch("https://example.test/v1/artifacts", { method: "POST", headers: { ...bearer(token), "content-type": "text/plain", "content-length": String(body.length), "x-filename": filename, "x-artifact-sha256": hash, "x-artifact-retention": retention }, body: bytes });
+  const response = await SELF.fetch("https://example.test/v1/artifacts", { method: "POST", headers: { ...bearer(token), "content-type": contentType, "content-length": String(body.length), "x-filename": filename, "x-artifact-sha256": hash, "x-artifact-retention": retention }, body: bytes });
   expect(response.status).toBe(201);
   return response.json();
 }

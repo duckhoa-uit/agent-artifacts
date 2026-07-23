@@ -22,6 +22,13 @@ export default {
       let response: Response;
       if (path === "/healthz" && request.method === "GET") {
         response = json({ ok: true, service: "agent-artifacts" });
+      } else if (path === "/v1/capabilities" && request.method === "GET") {
+        response = json({
+          max_small_upload_bytes: Number(env.MAX_SMALL_UPLOAD_BYTES),
+          multipart_part_size_bytes: Number(env.MULTIPART_PART_SIZE_BYTES),
+          default_share_ttl_seconds: Number(env.DEFAULT_SHARE_TTL_SECONDS),
+          retention: ["7d", "30d", "retain"],
+        });
       } else if (path.startsWith("/v1/admin/")) {
         const admin = await requireAdmin(request, env);
         response = admin instanceof Response ? admin : await handleAdmin(request, env, admin, path);
@@ -57,7 +64,12 @@ export default {
   },
 
   async scheduled(_controller: ScheduledController, env: AppEnv, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runCleanup(env).then((result) => console.log(JSON.stringify({ event: "cleanup.complete", ...result }))));
+    ctx.waitUntil(runCleanup(env)
+      .then((result) => console.log(JSON.stringify({ event: result.failures ? "cleanup.partial" : "cleanup.complete", ...result })))
+      .catch((cause) => {
+        console.error(JSON.stringify({ event: "cleanup.failed", reason: cause instanceof Error ? cause.message : String(cause) }));
+        throw cause;
+      }));
   },
 };
 
@@ -68,6 +80,8 @@ function withRequestId(response: Response, requestId: string): Response {
   headers.set("referrer-policy", "no-referrer");
   headers.set("x-frame-options", "DENY");
   headers.set("permissions-policy", "camera=(), microphone=(), geolocation=()");
-  headers.set("content-security-policy", "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; img-src 'self' blob: data:; object-src 'none'");
+  if (!headers.has("content-security-policy")) {
+    headers.set("content-security-policy", "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; img-src 'self' blob: data:; object-src 'none'");
+  }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }

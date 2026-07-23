@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "agent-artifacts",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-22",
+  "compatibility_date": "2026-07-23",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
@@ -38,6 +38,6 @@
     "DEFAULT_SHARE_TTL_SECONDS": "604800",
     "UPLOAD_SESSION_TTL_SECONDS": "86400",
     "ACCESS_TEAM_DOMAIN": "cool-band-fad1.cloudflareaccess.com",
-    "ACCESS_AUDIENCES": "474b498cd34ccab137aa61800402f84dcc1130196e25686c0c2695e1ce7252f6"
+    "ACCESS_AUDIENCE": "474b498cd34ccab137aa61800402f84dcc1130196e25686c0c2695e1ce7252f6"
   }
 }

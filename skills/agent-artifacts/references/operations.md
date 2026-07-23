@@ -7,8 +7,6 @@
 | `ARTIFACTS_URL` | Yes | Deployed Agent Artifacts Worker URL. |
 | `ARTIFACTS_API_KEY` | Yes | Profile-scoped agent credential. |
 | `GITHUB_REPOSITORY` | Optional | `OWNER/REPO` override for PR evidence. |
-| `HERMES_GATEWAY_MEDIA_URL` | Optional | Hermes gateway delivery endpoint. |
-| `HERMES_GATEWAY_TOKEN` | Optional | Bearer credential for the Hermes gateway. |
 
 Create one API key per agent or profile. Grant only the scopes needed:
 
@@ -32,8 +30,9 @@ artifactctl get ARTIFACT_ID --output FILE
 artifactctl delete ARTIFACT_ID
 ```
 
-Successful commands write one JSON object to stdout. Uploads larger than 50 MB
-use multipart upload automatically.
+Successful commands write one JSON object to stdout. The CLI reads the deployed
+Worker's capabilities and uses multipart upload above its advertised direct-upload
+limit.
 
 ## GitHub PR evidence
 
@@ -52,7 +51,7 @@ hermes-gateway-media FILE [--ttl SECONDS]
 ```
 
 The output contains `artifact_id`, file metadata, SHA-256, share URL, and
-expiry. `gateway_delivered` is present when optional gateway delivery succeeds.
+expiry for Hermes to return directly.
 
 ## Troubleshooting
 
@@ -63,4 +62,3 @@ expiry. `gateway_delivered` is present when optional gateway delivery succeeds.
 - `404`: the artifact is absent or belongs to another key owner.
 - GitHub command failure: run `gh auth status`, verify repository access, and
   pass `--pr` or `GITHUB_REPOSITORY` explicitly when auto-detection is wrong.
-

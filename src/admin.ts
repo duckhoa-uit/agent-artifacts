@@ -30,9 +30,9 @@ async function overview(env: AppEnv): Promise<Response> {
   const current = now();
   const [keys, artifacts, bytes, shares, uploads, events] = await Promise.all([
     env.DB.prepare("SELECT COUNT(*) AS value FROM api_keys WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?1)").bind(current).first<{ value: number }>(),
-    env.DB.prepare("SELECT COUNT(*) AS value FROM artifacts WHERE deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?1)").bind(current).first<{ value: number }>(),
-    env.DB.prepare("SELECT COALESCE(SUM(size_bytes), 0) AS value FROM artifacts WHERE deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?1)").bind(current).first<{ value: number }>(),
-    env.DB.prepare("SELECT COUNT(*) AS value FROM shares WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?1)").bind(current).first<{ value: number }>(),
+    env.DB.prepare("SELECT COUNT(*) AS value FROM artifacts a WHERE deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?1) AND NOT EXISTS (SELECT 1 FROM upload_sessions u WHERE u.artifact_id = a.id AND u.status != 'completed')").bind(current).first<{ value: number }>(),
+    env.DB.prepare("SELECT COALESCE(SUM(size_bytes), 0) AS value FROM artifacts a WHERE deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?1) AND NOT EXISTS (SELECT 1 FROM upload_sessions u WHERE u.artifact_id = a.id AND u.status != 'completed')").bind(current).first<{ value: number }>(),
+    env.DB.prepare("SELECT COUNT(*) AS value FROM shares s JOIN artifacts a ON a.id = s.artifact_id WHERE s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at > ?1) AND a.deleted_at IS NULL AND (a.expires_at IS NULL OR a.expires_at > ?1)").bind(current).first<{ value: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS value FROM upload_sessions WHERE status = 'active'").first<{ value: number }>(),
     env.DB.prepare("SELECT event_type, actor_type, actor_id, created_at FROM audit_logs ORDER BY id DESC LIMIT 8").all(),
   ]);
@@ -41,8 +41,11 @@ async function overview(env: AppEnv): Promise<Response> {
 
 async function listApiKeys(request: Request, env: AppEnv): Promise<Response> {
   const { limit, offset } = pagination(request);
-  const result = await env.DB.prepare("SELECT id, key_prefix, owner, scopes, created_at, last_used_at, expires_at, revoked_at FROM api_keys ORDER BY created_at DESC LIMIT ?1 OFFSET ?2").bind(limit, offset).all();
-  return json({ data: result.results, limit, offset });
+  const [result, total] = await Promise.all([
+    env.DB.prepare("SELECT id, key_prefix, owner, scopes, created_at, last_used_at, expires_at, revoked_at FROM api_keys ORDER BY created_at DESC LIMIT ?1 OFFSET ?2").bind(limit, offset).all(),
+    env.DB.prepare("SELECT COUNT(*) AS value FROM api_keys").first<{ value: number }>(),
+  ]);
+  return json({ data: result.results, total: total?.value ?? 0, limit, offset });
 }
 
 async function issueApiKey(request: Request, env: AppEnv, admin: AdminContext): Promise<Response> {
@@ -50,8 +53,7 @@ async function issueApiKey(request: Request, env: AppEnv, admin: AdminContext): 
   if ("response" in parsed) return parsed.response;
   const body = parsed.data;
   const expiresAt = body.expires_at === null ? null : body.expires_at ?? (body.expires_in_seconds ? now() + body.expires_in_seconds : null);
-  const created = await createApiKey(env, { owner: body.owner, scopes: body.scopes, expiresAt });
-  await audit(env, "key.create", { admin, metadata: { key_id: created.record.id, owner: created.record.owner, scopes: body.scopes } });
+  const created = await createApiKey(env, { owner: body.owner, scopes: body.scopes, expiresAt }, admin);
   return json({
     id: created.record.id, token: created.token, owner: created.record.owner, scopes: body.scopes,
     expires_at: created.record.expires_at, warning: "Store this token now. It will not be returned again.",
@@ -85,10 +87,17 @@ async function listArtifacts(request: Request, env: AppEnv): Promise<Response> {
   const url = new URL(request.url);
   const { limit, offset } = pagination(request);
   const search = `%${url.searchParams.get("q")?.trim() ?? ""}%`;
-  const result = await env.DB.prepare(
-    "SELECT a.id, a.filename, a.content_type, a.size_bytes, a.sha256, a.source_agent, a.repo, a.pr_number, a.task_id, a.purpose, a.created_at, a.deleted_at, a.r2_deleted_at, a.retention, a.expires_at, a.checksum_status, k.owner, k.key_prefix FROM artifacts a JOIN api_keys k ON k.id = a.api_key_id WHERE (a.filename LIKE ?1 OR k.owner LIKE ?1 OR COALESCE(a.repo, '') LIKE ?1) ORDER BY a.created_at DESC LIMIT ?2 OFFSET ?3",
-  ).bind(search, limit, offset).all();
-  return json({ data: result.results, limit, offset });
+  const current = now();
+  const where = "(a.filename LIKE ?1 OR k.owner LIKE ?1 OR COALESCE(a.repo, '') LIKE ?1)";
+  const [result, total] = await Promise.all([
+    env.DB.prepare(
+      `SELECT a.id, a.filename, a.content_type, a.size_bytes, a.sha256, a.source_agent, a.repo, a.pr_number, a.task_id, a.purpose, a.created_at, a.deleted_at, a.r2_deleted_at, a.retention, a.expires_at, a.checksum_status, k.owner, k.key_prefix, u.status AS upload_status,
+       CASE WHEN a.deleted_at IS NOT NULL THEN 'deleted' WHEN a.expires_at IS NOT NULL AND a.expires_at <= ?2 THEN 'expired' WHEN u.status = 'active' THEN 'uploading' WHEN u.status = 'aborted' THEN 'aborted' ELSE 'active' END AS state
+       FROM artifacts a JOIN api_keys k ON k.id = a.api_key_id LEFT JOIN upload_sessions u ON u.artifact_id = a.id WHERE ${where} ORDER BY a.created_at DESC LIMIT ?3 OFFSET ?4`,
+    ).bind(search, current, limit, offset).all(),
+    env.DB.prepare(`SELECT COUNT(*) AS value FROM artifacts a JOIN api_keys k ON k.id = a.api_key_id WHERE ${where}`).bind(search).first<{ value: number }>(),
+  ]);
+  return json({ data: result.results, total: total?.value ?? 0, limit, offset });
 }
 
 async function downloadArtifact(request: Request, env: AppEnv, artifactId: string): Promise<Response> {
@@ -107,10 +116,13 @@ async function deleteArtifact(env: AppEnv, admin: AdminContext, artifactId: stri
 
 async function listShares(request: Request, env: AppEnv): Promise<Response> {
   const { limit, offset } = pagination(request);
-  const result = await env.DB.prepare(
-    "SELECT s.id, s.artifact_id, a.filename, s.created_by_key_id, s.created_by_actor, s.created_at, s.expires_at, s.revoked_at FROM shares s JOIN artifacts a ON a.id = s.artifact_id ORDER BY s.created_at DESC LIMIT ?1 OFFSET ?2",
-  ).bind(limit, offset).all();
-  return json({ data: result.results, limit, offset });
+  const [result, total] = await Promise.all([
+    env.DB.prepare(
+      "SELECT s.id, s.artifact_id, a.filename, s.created_by_key_id, s.created_by_actor, s.created_at, s.expires_at, s.revoked_at, a.deleted_at AS artifact_deleted_at, a.expires_at AS artifact_expires_at FROM shares s JOIN artifacts a ON a.id = s.artifact_id ORDER BY s.created_at DESC LIMIT ?1 OFFSET ?2",
+    ).bind(limit, offset).all(),
+    env.DB.prepare("SELECT COUNT(*) AS value FROM shares").first<{ value: number }>(),
+  ]);
+  return json({ data: result.results, total: total?.value ?? 0, limit, offset });
 }
 
 async function issueShare(request: Request, env: AppEnv, admin: AdminContext): Promise<Response> {
@@ -121,8 +133,7 @@ async function issueShare(request: Request, env: AppEnv, admin: AdminContext): P
   if (!artifact) return error("Artifact not found", 404, "not_found");
   let expiresAt = body.retention === "retain" ? artifact.expires_at : now() + (body.expires_in_seconds ?? Number(env.DEFAULT_SHARE_TTL_SECONDS));
   if (artifact.expires_at !== null && (expiresAt === null || expiresAt > artifact.expires_at)) expiresAt = artifact.expires_at;
-  const share = await createShare(env, artifact.id, { actor: admin.actor }, expiresAt);
-  await audit(env, "share.admin_create", { admin, artifactId: artifact.id, shareId: share.id, metadata: { expires_at: expiresAt } });
+  const share = await createShare(env, artifact.id, { admin }, expiresAt);
   return json({ id: share.id, artifact_id: artifact.id, url: new URL(`/s/${share.token}/${encodeURIComponent(artifact.filename)}`, request.url).toString(), expires_at: expiresAt }, 201);
 }
 
@@ -136,8 +147,11 @@ async function revokeShare(env: AppEnv, admin: AdminContext, shareId: string): P
 
 async function listAuditLogs(request: Request, env: AppEnv): Promise<Response> {
   const { limit, offset } = pagination(request);
-  const result = await env.DB.prepare("SELECT id, event_type, api_key_id, artifact_id, share_id, actor_type, actor_id, metadata, created_at FROM audit_logs ORDER BY id DESC LIMIT ?1 OFFSET ?2").bind(limit, offset).all();
-  return json({ data: result.results, limit, offset });
+  const [result, total] = await Promise.all([
+    env.DB.prepare("SELECT id, event_type, api_key_id, artifact_id, share_id, actor_type, actor_id, metadata, created_at FROM audit_logs ORDER BY id DESC LIMIT ?1 OFFSET ?2").bind(limit, offset).all(),
+    env.DB.prepare("SELECT COUNT(*) AS value FROM audit_logs").first<{ value: number }>(),
+  ]);
+  return json({ data: result.results, total: total?.value ?? 0, limit, offset });
 }
 
 function pagination(request: Request): { limit: number; offset: number } {

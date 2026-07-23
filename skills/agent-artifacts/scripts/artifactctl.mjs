@@ -28,13 +28,16 @@ async function upload(values) {
   const retention = options.retention || "30d";
   if (!["7d", "30d", "retain"].includes(retention)) throw new Error("Upload retention must be 7d, 30d, or retain");
   const info = await stat(file);
+  const capabilities = await api("GET", "/v1/capabilities");
+  const maxSmallUploadBytes = Number(capabilities.max_small_upload_bytes);
+  if (!Number.isSafeInteger(maxSmallUploadBytes) || maxSmallUploadBytes <= 0) throw new Error("Worker returned an invalid direct-upload limit");
   const common = {
     filename: file.split(/[\\/]/).pop(), content_type: options["content-type"] || mime(file), sha256: await fileSha256(file),
     source_agent: options["source-agent"], repo: options.repo, pr_number: options.pr ? Number(options.pr) : undefined,
     task_id: options["task-id"], purpose: options.purpose, retention,
   };
   let result;
-  if (info.size <= 50 * 1024 * 1024) {
+  if (info.size <= maxSmallUploadBytes) {
     result = await api("POST", "/v1/artifacts", await readFile(file), headers(common));
   } else {
     const init = await api("POST", "/v1/uploads", JSON.stringify({ ...common, size_bytes: info.size }), { "content-type": "application/json" });
@@ -43,11 +46,13 @@ async function upload(values) {
       try {
         for (let partNumber = 1, offset = 0; offset < info.size; partNumber += 1, offset += init.part_size_bytes) {
           const length = Math.min(init.part_size_bytes, info.size - offset);
-          const buffer = Buffer.allocUnsafe(length);
-          await handle.read(buffer, 0, length, offset);
+          const buffer = Buffer.alloc(length);
+          await readExact(handle, buffer, offset);
           await api("PUT", `/v1/uploads/${init.upload_id}/parts/${partNumber}`, buffer, { "content-type": "application/octet-stream", "content-length": String(length) });
         }
       } finally { await handle.close(); }
+      const finalInfo = await stat(file);
+      if (finalInfo.size !== info.size || finalInfo.mtimeMs !== info.mtimeMs) throw new Error("File changed during multipart upload");
       result = await api("POST", `/v1/uploads/${init.upload_id}/complete`, JSON.stringify({}), { "content-type": "application/json" });
     } catch (cause) {
       await fetch(`${baseUrl}/v1/uploads/${encodeURIComponent(init.upload_id)}`, { method:"DELETE", headers:{ authorization:`Bearer ${apiKey}` } }).catch(() => undefined);
@@ -94,8 +99,8 @@ async function api(method, path, body, extraHeaders = {}) {
 }
 
 async function fileSha256(file) { const hash = createHash("sha256"); for await (const chunk of createReadStream(file)) hash.update(chunk); return hash.digest("hex"); }
+async function readExact(handle, buffer, position) { let offset = 0; while (offset < buffer.length) { const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, position + offset); if (!bytesRead) throw new Error("File ended during multipart upload"); offset += bytesRead; } }
 function headers(input) { return Object.fromEntries(Object.entries({ "content-type":input.content_type, "x-filename":input.filename, "x-artifact-sha256":input.sha256, "x-artifact-retention":input.retention, "x-source-agent":input.source_agent, "x-repo":input.repo, "x-pr-number":input.pr_number, "x-task-id":input.task_id, "x-purpose":input.purpose }).filter(([, value]) => value !== undefined)); }
 function flags(values) { const result = {}; for (let index = 0; index < values.length; index += 1) if (values[index]?.startsWith("--")) result[values[index].slice(2)] = values[index + 1]?.startsWith("--") ? true : values[++index]; return result; }
 function mime(file) { const extension = file.toLowerCase().split(".").pop(); return { png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", webp:"image/webp", mp4:"video/mp4", mov:"video/quicktime", webm:"video/webm", pdf:"application/pdf", json:"application/json", txt:"text/plain" }[extension] || "application/octet-stream"; }
 function print(value) { process.stdout.write(`${JSON.stringify(value)}\n`); }
-

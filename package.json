@@ -1,6 +1,6 @@
 {
   "name": "agent-artifacts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsc --noEmit",
     "check": "wrangler check startup",
+    "types:check": "wrangler types --check",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
     "db:migrate:local": "wrangler d1 migrations apply agent-artifacts --local",
@@ -17,18 +18,20 @@
     "test:unit": "vitest run tests/utils.test.ts",
     "test:integration": "vitest run tests/integration.test.ts",
     "test:skill": "vitest run --config vitest.node.config.ts",
+    "skill:validate": "skills-ref validate skills/agent-artifacts",
     "e2e": "node scripts/e2e.mjs",
     "access:configure": "node scripts/configure-access.mjs"
   },
   "dependencies": {
-    "jose": "latest",
-    "zod": "latest"
+    "jose": "^6.2.4",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "latest",
-    "@types/node": "latest",
-    "typescript": "latest",
-    "vitest": "latest",
-    "wrangler": "latest"
+    "@cloudflare/vitest-pool-workers": "^0.18.7",
+    "@types/node": "^26.1.1",
+    "skills-ref": "^0.1.5",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.113.0"
   }
 }

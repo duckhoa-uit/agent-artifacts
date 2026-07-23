@@ -33,19 +33,19 @@
         </section>
         <section id="view-keys" class="view">
           <div class="title-row"><div><p class="eyebrow">IDENTITIES</p><h1>API keys</h1><p>Issue least-privilege credentials and revoke them immediately.</p></div><button id="newKeyButton" class="button">Issue API key</button></div>
-          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Owner</th><th>Prefix</th><th>Scopes</th><th>Last used</th><th>State</th><th></th></tr></thead><tbody id="keysTable"></tbody></table></div></div>
+          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Owner</th><th>Prefix</th><th>Scopes</th><th>Last used</th><th>State</th><th></th></tr></thead><tbody id="keysTable"></tbody></table></div><div id="keysPager" class="pager"></div></div>
         </section>
         <section id="view-artifacts" class="view">
           <div class="title-row"><div><p class="eyebrow">EVIDENCE INVENTORY</p><h1>Artifacts</h1><p>Inspect ownership, integrity, retention, and delivery state.</p></div><label class="search"><span class="sr-only">Search artifacts</span><input id="artifactSearch" type="search" placeholder="Search filename, owner, repo"></label></div>
-          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Owner</th><th>Size</th><th>Integrity</th><th>Retention</th><th></th></tr></thead><tbody id="artifactsTable"></tbody></table></div></div>
+          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Owner</th><th>Size</th><th>Integrity</th><th>Retention</th><th></th></tr></thead><tbody id="artifactsTable"></tbody></table></div><div id="artifactsPager" class="pager"></div></div>
         </section>
         <section id="view-shares" class="view">
           <div class="title-row"><div><p class="eyebrow">DELIVERY LINKS</p><h1>Shares</h1><p>Review public evidence links and revoke access.</p></div></div>
-          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Created by</th><th>Created</th><th>Expiry</th><th>State</th><th></th></tr></thead><tbody id="sharesTable"></tbody></table></div></div>
+          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Created by</th><th>Created</th><th>Expiry</th><th>State</th><th></th></tr></thead><tbody id="sharesTable"></tbody></table></div><div id="sharesPager" class="pager"></div></div>
         </section>
         <section id="view-audit" class="view">
           <div class="title-row"><div><p class="eyebrow">IMMUTABLE TRACE</p><h1>Audit ledger</h1><p>Administrative and agent activity in reverse chronological order.</p></div></div>
-          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Artifact</th><th>Metadata</th></tr></thead><tbody id="auditTable"></tbody></table></div></div>
+          <div class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Artifact</th><th>Metadata</th></tr></thead><tbody id="auditTable"></tbody></table></div><div id="auditPager" class="pager"></div></div>
         </section>
       </main>
     </div>

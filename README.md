@@ -5,10 +5,11 @@ Private artifact storage for Codex, Claude, Hermes, and automation workflows. A 
 ## Capabilities
 
 - Owner-isolated agent API keys with `artifact:write`, `artifact:read`, `artifact:delete`, and `share:create` scopes.
-- SHA-256-verified uploads up to 50 MB and size-validated R2 multipart uploads above that limit.
+- SHA-256-verified direct uploads and size-validated R2 multipart uploads selected from the Worker's advertised capabilities.
 - GET, HEAD, Range, ETag conditionals, private artifacts, and revocable opaque share URLs.
 - `7d`, `30d`, and `retain` artifact policies with hourly cleanup of expired artifacts, stale multipart sessions, and retryable R2 deletion reconciliation.
 - Cloudflare Access-aware admin console at `/admin` for keys, artifacts, shares, overview metrics, and audit events.
+- Sandboxed artifact delivery: active document types download instead of executing under the admin origin.
 - One-time raw key reveal; D1 stores only a SHA-256 hash and short prefix.
 - A self-contained Agent Skills package for artifact operations, GitHub PR evidence, and Hermes media delivery.
 
@@ -38,20 +39,21 @@ other values in the environment where they are used, not in the repository.
 | `DEFAULT_SHARE_TTL_SECONDS` | Worker | Yes | Default lifetime of temporary share links. |
 | `UPLOAD_SESSION_TTL_SECONDS` | Worker | Yes | Age after which inactive multipart sessions are cleaned up. |
 | `ACCESS_TEAM_DOMAIN` | Worker | Yes for Access admin | Cloudflare Access team domain used to verify JWTs. |
-| `ACCESS_AUDIENCES` | Worker | Yes for Access admin | Comma-separated audiences for the protected admin applications. |
+| `ACCESS_AUDIENCE` | Worker | Yes for Access admin | Audience for the Access application protecting both admin destinations. |
 | `CLOUDFLARE_ACCOUNT_ID` | Wrangler and `configure-access.mjs` | Deploy/setup only | Cloudflare account targeted by the operation. |
 | `CLOUDFLARE_API_TOKEN` | Wrangler and `configure-access.mjs` | Deploy/setup only | Cloudflare API credential. |
 | `ACCESS_ALLOWED_EMAIL` | `configure-access.mjs` | Access setup only | Email granted the admin Access policy. |
 | `ARTIFACTS_E2E_ADMIN_TOKEN` | `npm run e2e` | One E2E auth option | Break-glass credential for production E2E. |
-| `ARTIFACTS_E2E_ACCESS_CLIENT_ID` | `npm run e2e` | Pair, one E2E auth option | Cloudflare Access service-token client ID. |
+| `ARTIFACTS_E2E_ACCESS_CLIENT_ID` | `configure-access.mjs`, `npm run e2e` | Pair, one E2E auth option | Cloudflare Access service-token client ID; setup also binds this exact token to the managed Service Auth policy. |
 | `ARTIFACTS_E2E_ACCESS_CLIENT_SECRET` | `npm run e2e` | Pair, one E2E auth option | Cloudflare Access service-token client secret. |
-| `HERMES_GATEWAY_MEDIA_URL` | `hermes-gateway-media.mjs` | Optional integration | Endpoint that receives shared-media metadata. |
-| `HERMES_GATEWAY_TOKEN` | `hermes-gateway-media.mjs` | Optional with gateway URL | Bearer credential for the optional Hermes gateway endpoint. |
 | `GITHUB_REPOSITORY` | `github-pr-evidence.mjs` | Optional | Repository override; otherwise the CLI asks `gh` for the current repository. |
 
 Production E2E needs `ARTIFACTS_URL` and either `ARTIFACTS_E2E_ADMIN_TOKEN` or
 the Access service-token pair. The E2E variables are not Worker runtime
 configuration.
+
+The Worker exposes `GET /v1/capabilities`; bundled clients use it to select
+direct or multipart upload without duplicating deployment limits.
 
 ## Deploy
 
@@ -68,18 +70,27 @@ Set the Worker secret separately:
 npx wrangler secret put ADMIN_TOKEN
 ```
 
-For production admin access, create Cloudflare Access self-hosted applications for `/admin*` and `/v1/admin/*`, each with an Allow policy for the administrator email. The Worker accepts the comma-separated audiences from both applications. With an API token that has `Access: Apps and Policies Write`, use the idempotent bootstrap helper:
+For production admin access, create a Cloudflare Access service token for CI.
+With a temporary provisioning API token that has `Access: Apps and Policies
+Write`, `Access: Organizations, Identity Providers, and Groups Read`, and
+`Access: Service Tokens Read`, use the idempotent bootstrap helper. It creates
+one self-hosted application for both admin destinations, the administrator
+email policy, and a Service Auth policy restricted to the exact E2E token:
 
 ```bash
 export CLOUDFLARE_ACCOUNT_ID=...
 export CLOUDFLARE_API_TOKEN=...
 export ARTIFACTS_URL=https://agent-artifacts.example.workers.dev
 export ACCESS_ALLOWED_EMAIL=you@example.com
+export ARTIFACTS_E2E_ACCESS_CLIENT_ID=...access
 node scripts/configure-access.mjs
 node scripts/configure-access.mjs --apply
 ```
 
-Set the printed `ACCESS_TEAM_DOMAIN` (without `https://`) and `ACCESS_AUDIENCES` in `wrangler.jsonc`, then deploy. The Worker validates the `Cf-Access-Jwt-Assertion`; `ADMIN_TOKEN` remains a break-glass path for operational recovery and E2E.
+Set the printed `ACCESS_TEAM_DOMAIN` and `ACCESS_AUDIENCE` in `wrangler.jsonc`, then deploy. The Worker validates the `Cf-Access-Jwt-Assertion`; `ADMIN_TOKEN` remains a break-glass path for operational recovery and E2E.
+
+The service-token secret is not needed by the bootstrap helper. Store the
+client ID and secret only in the CI environment that runs post-deploy E2E.
 
 ## Agent skill
 
@@ -126,10 +137,18 @@ node cli/artifactctl.mjs get ARTIFACT_ID --output ./download.png
 node cli/artifactctl.mjs delete ARTIFACT_ID
 ```
 
-Downloads stream to disk. Multipart failures trigger an abort, and wrapper failures delete artifacts they created.
+Downloads stream to disk. Multipart failures trigger a retryable abort, files
+are checked for mutation during upload, and wrapper failures delete artifacts
+they created.
 
 ## Verification
 
 `npm test` runs unit and Worker-runtime integration tests against isolated local D1/R2 bindings. `npm run e2e` runs the full deployed API lifecycle and always attempts cleanup. Production E2E requires `ARTIFACTS_URL` plus either `ARTIFACTS_E2E_ADMIN_TOKEN` or the `ARTIFACTS_E2E_ACCESS_CLIENT_ID` / `ARTIFACTS_E2E_ACCESS_CLIENT_SECRET` Cloudflare Access service-token pair.
 
-See [docs/decisions/0001-selective-reuse.md](docs/decisions/0001-selective-reuse.md) for upstream provenance and the reuse boundary.
+Hourly cleanup retries interrupted R2 work, retains audit history for 90 days,
+and purges reconciled tombstones after 30 days.
+
+See [docs/decisions/0001-selective-reuse.md](docs/decisions/0001-selective-reuse.md)
+for upstream provenance and
+[docs/decisions/0002-runtime-hardening.md](docs/decisions/0002-runtime-hardening.md)
+for the delivery and lifecycle boundaries.

@@ -1,5 +1,7 @@
-import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+
+process.env.ADMIN_TOKEN ??= "test-admin-token";
+const { cloudflareTest, readD1Migrations } = await import("@cloudflare/vitest-pool-workers");
 
 export default defineConfig(async () => ({
   plugins: [cloudflareTest({

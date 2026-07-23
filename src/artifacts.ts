@@ -1,8 +1,8 @@
 import type { AppEnv, ArtifactRow, AuthContext, Retention } from "./types";
-import { audit, createShare, getArtifact } from "./db";
+import { audit, auditStatement, createShare, getArtifact } from "./db";
 import { requireScope } from "./auth";
 import { artifactInputSchema, multipartInputSchema, parseJson, shareInputSchema } from "./schema";
-import { artifactHeaders, error, id, json, now, parseRange, safeFilename, sha256 } from "./utils";
+import { artifactHeaders, error, etagMatches, id, json, now, parseRange, safeFilename, sha256 } from "./utils";
 
 interface ArtifactInput {
   filename: string;
@@ -24,6 +24,8 @@ interface UploadSession {
   r2_upload_id: string;
   total_parts: number;
   status: "active" | "completed" | "aborted";
+  operation: "completing" | "aborting" | null;
+  operation_started_at: number | null;
 }
 
 export async function createSmallArtifact(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
@@ -48,8 +50,10 @@ export async function createSmallArtifact(request: Request, env: AppEnv, ctx: Ex
       sha256: input.sha256,
     });
   } catch (cause) {
-    console.warn(JSON.stringify({ event: "artifact.upload_rejected", artifact_id: artifactId, reason: cause instanceof Error ? cause.message : "r2_error" }));
-    return error("Artifact checksum did not match the uploaded body", 422, "checksum_mismatch");
+    const reason = cause instanceof Error ? cause.message : "r2_error";
+    console.warn(JSON.stringify({ event: "artifact.upload_rejected", artifact_id: artifactId, reason }));
+    if (/checksum|sha-?256/i.test(reason)) return error("Artifact checksum did not match the uploaded body", 422, "checksum_mismatch");
+    return error("Artifact storage is temporarily unavailable", 503, "storage_unavailable");
   }
   if (stored.size !== length) {
     await env.ARTIFACTS.delete(r2Key);
@@ -61,7 +65,6 @@ export async function createSmallArtifact(request: Request, env: AppEnv, ctx: Ex
     await env.ARTIFACTS.delete(r2Key);
     throw cause;
   }
-  await audit(env, "artifact.upload", { apiKeyId: auth.id, artifactId, metadata: { mode: "small", size_bytes: stored.size, checksum: "verified" } });
   return json(artifactResponse(request, artifactId, stored.size, input, auth), 201);
 }
 
@@ -90,12 +93,12 @@ export async function initMultipart(request: Request, env: AppEnv, ctx: Executio
       env.DB.prepare("INSERT INTO upload_sessions (id, artifact_id, api_key_id, r2_key, r2_upload_id, total_parts, status, created_at, last_activity_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?7)").bind(
         sessionId, artifactId, auth.id, r2Key, multipart.uploadId, totalParts, createdAt,
       ),
+      auditStatement(env, "artifact.upload.init", { apiKeyId: auth.id, artifactId, metadata: { mode: "multipart", total_parts: totalParts, expected_size: input.size_bytes } }),
     ]);
   } catch (cause) {
     await multipart.abort().catch(() => undefined);
     throw cause;
   }
-  await audit(env, "artifact.upload.init", { apiKeyId: auth.id, artifactId, metadata: { mode: "multipart", total_parts: totalParts, expected_size: input.size_bytes } });
   return json({ upload_id: sessionId, artifact_id: artifactId, part_size_bytes: partSize, total_parts: totalParts }, 201);
 }
 
@@ -105,7 +108,7 @@ export async function uploadPart(request: Request, env: AppEnv, ctx: ExecutionCo
   const partNumber = Number(partNumberValue);
   if (!Number.isInteger(partNumber) || partNumber < 1 || !request.body) return error("Invalid part or empty body", 400);
   const session = await env.DB.prepare(
-    "SELECT s.*, a.size_bytes FROM upload_sessions s JOIN artifacts a ON a.id = s.artifact_id WHERE s.id = ?1 AND s.api_key_id = ?2 AND s.status = 'active' AND a.deleted_at IS NULL",
+    "SELECT s.*, a.size_bytes FROM upload_sessions s JOIN artifacts a ON a.id = s.artifact_id WHERE s.id = ?1 AND s.api_key_id = ?2 AND s.status = 'active' AND s.operation IS NULL AND a.deleted_at IS NULL",
   ).bind(sessionId, auth.id).first<UploadSession & { size_bytes: number }>();
   if (!session) return error("Active upload session not found", 404, "not_found");
   if (partNumber > session.total_parts) return error("Part number exceeds the upload plan", 400);
@@ -113,7 +116,13 @@ export async function uploadPart(request: Request, env: AppEnv, ctx: ExecutionCo
   const expected = partNumber === session.total_parts ? session.size_bytes - partSize * (session.total_parts - 1) : partSize;
   const actual = Number(request.headers.get("content-length"));
   if (actual !== expected) return error(`Part ${partNumber} must be exactly ${expected} bytes`, 422, "part_size_mismatch");
-  const part = await env.ARTIFACTS.resumeMultipartUpload(session.r2_key, session.r2_upload_id).uploadPart(partNumber, request.body);
+  let part: R2UploadedPart;
+  try {
+    part = await env.ARTIFACTS.resumeMultipartUpload(session.r2_key, session.r2_upload_id).uploadPart(partNumber, request.body);
+  } catch (cause) {
+    console.warn(JSON.stringify({ event: "artifact.part_upload_failed", upload_id: session.id, part_number: partNumber, reason: cause instanceof Error ? cause.message : "r2_error" }));
+    return error("Multipart storage is temporarily unavailable", 503, "storage_unavailable");
+  }
   await env.DB.batch([
     env.DB.prepare("INSERT OR REPLACE INTO upload_parts (upload_id, part_number, etag, size_bytes) VALUES (?1, ?2, ?3, ?4)").bind(sessionId, partNumber, part.etag, actual),
     env.DB.prepare("UPDATE upload_sessions SET last_activity_at = ?1 WHERE id = ?2").bind(now(), sessionId),
@@ -128,12 +137,31 @@ export async function completeMultipart(request: Request, env: AppEnv, ctx: Exec
   if (!session) return error("Upload session not found", 404, "not_found");
   if (session.status === "aborted") return error("Upload session was aborted", 409, "upload_aborted");
   if (session.status === "completed") return completedArtifactResponse(request, env, session.artifact_id, auth);
-  const artifact = await getArtifact(env, session.artifact_id);
-  if (!artifact) return error("Artifact metadata not found", 404, "not_found");
+  if (session.operation === "aborting") return error("Upload session is being aborted", 409, "upload_aborting");
+  if (session.operation === "completing") {
+    const recovered = await recoverCompletedUpload(env, session);
+    if (recovered) return completedArtifactResponse(request, env, session.artifact_id, auth);
+    return error("Upload session completion is already in progress", 409, "upload_completing");
+  }
+  if (!await claimUploadTransition(env, session.id, "completing")) {
+    return error("Upload session state changed; retry completion", 409, "upload_state_changed");
+  }
+  const artifact = await env.DB.prepare("SELECT * FROM artifacts WHERE id = ?1 AND deleted_at IS NULL")
+    .bind(session.artifact_id).first<ArtifactRow>();
+  if (!artifact) {
+    await releaseUploadTransition(env, session.id, "completing");
+    return error("Artifact metadata not found", 404, "not_found");
+  }
   const parts = await env.DB.prepare("SELECT part_number, etag, size_bytes FROM upload_parts WHERE upload_id = ?1 ORDER BY part_number ASC")
     .bind(sessionId).all<{ part_number: number; etag: string; size_bytes: number }>();
-  if (parts.results.length !== session.total_parts) return error("All multipart parts must be uploaded before completion", 409, "incomplete_upload");
-  if (parts.results.reduce((sum, part) => sum + part.size_bytes, 0) !== artifact.size_bytes) return error("Uploaded part sizes do not match the declared artifact size", 422, "size_mismatch");
+  if (parts.results.length !== session.total_parts) {
+    await releaseUploadTransition(env, session.id, "completing");
+    return error("All multipart parts must be uploaded before completion", 409, "incomplete_upload");
+  }
+  if (parts.results.reduce((sum, part) => sum + part.size_bytes, 0) !== artifact.size_bytes) {
+    await releaseUploadTransition(env, session.id, "completing");
+    return error("Uploaded part sizes do not match the declared artifact size", 422, "size_mismatch");
+  }
 
   const multipart = env.ARTIFACTS.resumeMultipartUpload(session.r2_key, session.r2_upload_id);
   let stored: R2Object;
@@ -141,16 +169,24 @@ export async function completeMultipart(request: Request, env: AppEnv, ctx: Exec
     stored = await multipart.complete(parts.results.map((part) => ({ partNumber: part.part_number, etag: part.etag })));
   } catch (cause) {
     const existing = await env.ARTIFACTS.head(session.r2_key);
-    if (!existing) throw cause;
+    if (!existing) {
+      await releaseUploadTransition(env, session.id, "completing");
+      console.warn(JSON.stringify({ event: "artifact.upload_complete_failed", upload_id: session.id, reason: cause instanceof Error ? cause.message : "r2_error" }));
+      return error("Multipart completion is temporarily unavailable", 503, "storage_unavailable");
+    }
     stored = existing;
   }
   if (stored.size !== artifact.size_bytes) {
     await env.ARTIFACTS.delete(session.r2_key);
-    await markUploadAborted(env, session);
+    await markUploadAborted(env, session, "completing");
     return error("Completed object size does not match the declared artifact size", 422, "size_mismatch");
   }
-  await env.DB.prepare("UPDATE upload_sessions SET status = 'completed', completed_at = ?1, last_activity_at = ?1 WHERE id = ?2").bind(now(), sessionId).run();
-  await audit(env, "artifact.upload.complete", { apiKeyId: auth.id, artifactId: artifact.id, metadata: { mode: "multipart", size_bytes: stored.size, checksum: "client_asserted" } });
+  const completedAt = now();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE upload_sessions SET status = 'completed', operation = NULL, operation_started_at = NULL, completed_at = ?1, last_activity_at = ?1 WHERE id = ?2 AND operation = 'completing'")
+      .bind(completedAt, sessionId),
+    auditStatement(env, "artifact.upload.complete", { apiKeyId: auth.id, artifactId: artifact.id, metadata: { mode: "multipart", size_bytes: stored.size, checksum: "client_asserted" } }),
+  ]);
   return completedArtifactResponse(request, env, artifact.id, auth);
 }
 
@@ -159,7 +195,15 @@ export async function abortMultipart(request: Request, env: AppEnv, ctx: Executi
   if (auth instanceof Response) return auth;
   const session = await env.DB.prepare("SELECT * FROM upload_sessions WHERE id = ?1 AND api_key_id = ?2 AND status = 'active'").bind(sessionId, auth.id).first<UploadSession>();
   if (!session) return error("Active upload session not found", 404, "not_found");
-  await env.ARTIFACTS.resumeMultipartUpload(session.r2_key, session.r2_upload_id).abort().catch(() => undefined);
+  if (session.operation) return error(`Upload session is already ${session.operation}`, 409, "upload_state_changed");
+  if (!await claimUploadTransition(env, session.id, "aborting")) return error("Upload session state changed; retry abort", 409, "upload_state_changed");
+  try {
+    await env.ARTIFACTS.resumeMultipartUpload(session.r2_key, session.r2_upload_id).abort();
+  } catch (cause) {
+    await releaseUploadTransition(env, session.id, "aborting");
+    console.warn(JSON.stringify({ event: "artifact.upload_abort_failed", upload_id: session.id, reason: cause instanceof Error ? cause.message : "r2_error" }));
+    return error("Multipart abort failed; retry later", 503, "upload_abort_failed");
+  }
   await markUploadAborted(env, session);
   await audit(env, "artifact.upload.abort", { apiKeyId: auth.id, artifactId: session.artifact_id });
   return new Response(null, { status: 204 });
@@ -171,7 +215,7 @@ export async function getArtifactResponse(request: Request, env: AppEnv, ctx: Ex
   const artifact = await getArtifact(env, artifactId);
   if (!artifact || artifact.api_key_id !== auth.id) return error("Artifact not found", 404, "not_found");
   const response = await serveArtifact(request, env, artifact);
-  if (response.status < 400) ctx.waitUntil(audit(env, "artifact.download", { apiKeyId: auth.id, artifactId, metadata: { range: response.status === 206, method: request.method } }));
+  if (shouldAuditDownload(request, response)) ctx.waitUntil(audit(env, "artifact.download", { apiKeyId: auth.id, artifactId, metadata: { range: response.status === 206, method: request.method } }));
   return response;
 }
 
@@ -195,7 +239,6 @@ export async function createArtifactShare(request: Request, env: AppEnv, ctx: Ex
   const value = "data" in body ? body.data : body;
   const expiresAt = shareExpiry(value.retention, "expires_in_seconds" in value ? value.expires_in_seconds : undefined, artifact, env);
   const share = await createShare(env, artifactId, { apiKeyId: auth.id }, expiresAt);
-  await audit(env, "share.create", { apiKeyId: auth.id, artifactId, shareId: share.id, metadata: { expires_at: expiresAt } });
   return json({ id: share.id, artifact_id: artifactId, url: new URL(`/s/${share.token}/${encodeURIComponent(artifact.filename)}`, request.url).toString(), expires_at: expiresAt }, 201);
 }
 
@@ -215,19 +258,20 @@ export async function getSharedArtifact(request: Request, env: AppEnv, ctx: Exec
   const artifact = await getArtifact(env, share.artifact_id);
   if (!artifact) return error("Artifact not found", 404, "not_found");
   const response = await serveArtifact(request, env, artifact);
-  if (response.status < 400) ctx.waitUntil(audit(env, "share.download", { artifactId: artifact.id, shareId: share.id, metadata: { range: response.status === 206, method: request.method } }));
+  if (shouldAuditDownload(request, response)) ctx.waitUntil(audit(env, "share.download", { artifactId: artifact.id, shareId: share.id, metadata: { range: response.status === 206, method: request.method } }));
   return response;
 }
 
 export async function serveArtifact(request: Request, env: AppEnv, artifact: ArtifactRow): Promise<Response> {
-  const range = parseRange(request.headers.get("range"), artifact.size_bytes);
-  if (request.headers.get("range") && !range) return new Response(null, { status: 416, headers: { "content-range": `bytes */${artifact.size_bytes}` } });
+  const rangeHeader = request.method === "GET" ? request.headers.get("range") : null;
+  const range = rangeHeader?.includes(",") ? null : parseRange(rangeHeader, artifact.size_bytes);
+  if (rangeHeader && !range && !rangeHeader.includes(",")) return new Response(null, { status: 416, headers: { "content-range": `bytes */${artifact.size_bytes}` } });
   const object = await env.ARTIFACTS.get(artifact.r2_key, range ? { range } : undefined);
   if (!object) return error("Artifact object not found", 404, "not_found");
   const headers = artifactHeaders(artifact, object.httpEtag);
-  if (request.headers.get("if-none-match") === object.httpEtag) return new Response(null, { status: 304, headers });
+  if (etagMatches(request.headers.get("if-none-match"), object.httpEtag, true)) return new Response(null, { status: 304, headers });
   const ifMatch = request.headers.get("if-match");
-  if (ifMatch && ifMatch !== "*" && ifMatch !== object.httpEtag) return new Response(null, { status: 412, headers });
+  if (ifMatch && !etagMatches(ifMatch, object.httpEtag, false)) return new Response(null, { status: 412, headers });
   if (range) {
     headers.set("content-length", String(range.length));
     headers.set("content-range", `bytes ${range.offset}-${range.offset + range.length - 1}/${artifact.size_bytes}`);
@@ -237,11 +281,19 @@ export async function serveArtifact(request: Request, env: AppEnv, artifact: Art
 
 export async function deleteArtifactData(env: AppEnv, artifact: ArtifactRow): Promise<void> {
   const active = await env.DB.prepare("SELECT * FROM upload_sessions WHERE artifact_id = ?1 AND status = 'active'").bind(artifact.id).first<UploadSession>();
-  if (active) await env.ARTIFACTS.resumeMultipartUpload(active.r2_key, active.r2_upload_id).abort().catch(() => undefined);
+  if (active) {
+    if (active.operation || !await claimUploadTransition(env, active.id, "aborting")) throw new Error("Upload session state changed during artifact deletion");
+    try {
+      await env.ARTIFACTS.resumeMultipartUpload(active.r2_key, active.r2_upload_id).abort();
+    } catch (cause) {
+      await releaseUploadTransition(env, active.id, "aborting");
+      throw cause;
+    }
+  }
   const deletedAt = now();
   await env.DB.batch([
     env.DB.prepare("UPDATE artifacts SET deleted_at = COALESCE(deleted_at, ?1) WHERE id = ?2").bind(deletedAt, artifact.id),
-    env.DB.prepare("UPDATE upload_sessions SET status = 'aborted', last_activity_at = ?1 WHERE artifact_id = ?2 AND status = 'active'").bind(deletedAt, artifact.id),
+    env.DB.prepare("UPDATE upload_sessions SET status = 'aborted', operation = NULL, operation_started_at = NULL, last_activity_at = ?1 WHERE artifact_id = ?2 AND status = 'active'").bind(deletedAt, artifact.id),
     env.DB.prepare("UPDATE shares SET revoked_at = COALESCE(revoked_at, ?1) WHERE artifact_id = ?2").bind(deletedAt, artifact.id),
   ]);
   await env.ARTIFACTS.delete(artifact.r2_key);
@@ -265,11 +317,14 @@ function headersInput(headers: Headers): Record<string, unknown> {
 async function insertArtifact(env: AppEnv, artifactId: string, auth: AuthContext, r2Key: string, sizeBytes: number, input: ArtifactInput, checksumStatus: ArtifactRow["checksum_status"]): Promise<void> {
   const createdAt = now();
   const retention = resolveRetention(input.retention);
-  await env.DB.prepare("INSERT INTO artifacts (id, api_key_id, filename, content_type, size_bytes, sha256, r2_key, source_agent, repo, pr_number, task_id, purpose, created_at, retention, expires_at, checksum_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)").bind(
-    artifactId, auth.id, safeFilename(input.filename), input.content_type, sizeBytes, input.sha256 ?? null, r2Key,
-    input.source_agent ?? null, input.repo ?? null, input.pr_number ?? null, input.task_id ?? null, input.purpose ?? null,
-    createdAt, retention, retentionExpiry(retention, createdAt), checksumStatus,
-  ).run();
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO artifacts (id, api_key_id, filename, content_type, size_bytes, sha256, r2_key, source_agent, repo, pr_number, task_id, purpose, created_at, retention, expires_at, checksum_status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)").bind(
+      artifactId, auth.id, safeFilename(input.filename), input.content_type, sizeBytes, input.sha256 ?? null, r2Key,
+      input.source_agent ?? null, input.repo ?? null, input.pr_number ?? null, input.task_id ?? null, input.purpose ?? null,
+      createdAt, retention, retentionExpiry(retention, createdAt), checksumStatus,
+    ),
+    auditStatement(env, "artifact.upload", { apiKeyId: auth.id, artifactId, metadata: { mode: "small", size_bytes: sizeBytes, checksum: checksumStatus } }),
+  ]);
 }
 
 async function completedArtifactResponse(request: Request, env: AppEnv, artifactId: string, auth: AuthContext): Promise<Response> {
@@ -302,10 +357,42 @@ function shareExpiry(retention: "retain" | "temporary", ttl: number | undefined,
   return artifact.expires_at === null ? requested : Math.min(requested, artifact.expires_at);
 }
 
-async function markUploadAborted(env: AppEnv, session: UploadSession): Promise<void> {
+async function markUploadAborted(env: AppEnv, session: UploadSession, operation: "completing" | "aborting" = "aborting"): Promise<void> {
   const timestamp = now();
   await env.DB.batch([
-    env.DB.prepare("UPDATE upload_sessions SET status = 'aborted', last_activity_at = ?1 WHERE id = ?2").bind(timestamp, session.id),
+    env.DB.prepare("UPDATE upload_sessions SET status = 'aborted', operation = NULL, operation_started_at = NULL, last_activity_at = ?1 WHERE id = ?2 AND operation = ?3").bind(timestamp, session.id, operation),
     env.DB.prepare("UPDATE artifacts SET deleted_at = COALESCE(deleted_at, ?1) WHERE id = ?2").bind(timestamp, session.artifact_id),
+    env.DB.prepare("UPDATE shares SET revoked_at = COALESCE(revoked_at, ?1) WHERE artifact_id = ?2").bind(timestamp, session.artifact_id),
   ]);
+}
+
+export async function claimUploadTransition(env: AppEnv, sessionId: string, operation: "completing" | "aborting"): Promise<boolean> {
+  const result = await env.DB.prepare(
+    "UPDATE upload_sessions SET operation = ?1, operation_started_at = ?2 WHERE id = ?3 AND status = 'active' AND operation IS NULL",
+  ).bind(operation, now(), sessionId).run();
+  return result.meta.changes === 1;
+}
+
+export async function releaseUploadTransition(env: AppEnv, sessionId: string, operation: "completing" | "aborting"): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE upload_sessions SET operation = NULL, operation_started_at = NULL WHERE id = ?1 AND status = 'active' AND operation = ?2",
+  ).bind(sessionId, operation).run();
+}
+
+async function recoverCompletedUpload(env: AppEnv, session: UploadSession): Promise<boolean> {
+  const object = await env.ARTIFACTS.head(session.r2_key);
+  if (!object) return false;
+  const artifact = await env.DB.prepare("SELECT size_bytes FROM artifacts WHERE id = ?1 AND deleted_at IS NULL")
+    .bind(session.artifact_id).first<{ size_bytes: number }>();
+  if (!artifact || object.size !== artifact.size_bytes) return false;
+  const result = await env.DB.prepare(
+    "UPDATE upload_sessions SET status = 'completed', operation = NULL, operation_started_at = NULL, completed_at = ?1, last_activity_at = ?1 WHERE id = ?2 AND status = 'active' AND operation = 'completing'",
+  ).bind(now(), session.id).run();
+  return result.meta.changes === 1;
+}
+
+function shouldAuditDownload(request: Request, response: Response): boolean {
+  if (request.method !== "GET" || response.status >= 400) return false;
+  if (response.status !== 206) return true;
+  return response.headers.get("content-range")?.startsWith("bytes 0-") ?? false;
 }
