@@ -10,7 +10,7 @@ Private artifact storage for Codex, Claude, Hermes, and automation workflows. A 
 - `7d`, `30d`, and `retain` artifact policies with hourly cleanup of expired artifacts, stale multipart sessions, and retryable R2 deletion reconciliation.
 - Cloudflare Access-aware admin console at `/admin` for keys, artifacts, shares, overview metrics, and audit events.
 - One-time raw key reveal; D1 stores only a SHA-256 hash and short prefix.
-- Shared CLI plus artifact-store, GitHub PR evidence, and Hermes gateway skills.
+- A self-contained Agent Skills package for artifact operations, GitHub PR evidence, and Hermes media delivery.
 
 ## Local setup
 
@@ -81,11 +81,39 @@ node scripts/configure-access.mjs --apply
 
 Set the printed `ACCESS_TEAM_DOMAIN` (without `https://`) and `ACCESS_AUDIENCES` in `wrangler.jsonc`, then deploy. The Worker validates the `Cf-Access-Jwt-Assertion`; `ADMIN_TOKEN` remains a break-glass path for operational recovery and E2E.
 
+## Agent skill
+
+Install the self-contained `agent-artifacts` skill from GitHub. The installer
+places `SKILL.md`, its scripts, and its reference file in the selected agent's
+native skill directory.
+
+Project-scoped installation:
+
+```bash
+npx skills add duckhoa-uit/agent-artifacts --skill agent-artifacts
+```
+
+Global installation for Codex, Claude Code, and Hermes Agent:
+
+```bash
+npx skills add duckhoa-uit/agent-artifacts \
+  --skill agent-artifacts \
+  --global \
+  --agent codex claude-code hermes-agent \
+  --yes
+```
+
+Inject `ARTIFACTS_URL` and a profile-scoped `ARTIFACTS_API_KEY` into each
+agent's process. The installed skill chooses and runs its bundled workflow;
+agents do not need the source repository or a globally installed
+`artifactctl`.
+
 ## CLI
 
-The Worker URL is the only endpoint configuration. Private artifact commands also
-require a profile-scoped API key; the key is deliberately not included in the
-shared `.env.example`.
+The root CLI remains available for repository development and delegates to the
+same scripts bundled with the skill. The Worker URL is the only endpoint
+configuration. Private artifact commands also require a profile-scoped API
+key; the key is deliberately not included in the shared `.env.example`.
 
 ```bash
 export ARTIFACTS_URL=https://agent-artifacts.example.workers.dev

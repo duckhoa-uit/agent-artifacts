@@ -13,9 +13,10 @@
     "deploy": "wrangler deploy --minify",
     "db:migrate:local": "wrangler d1 migrations apply agent-artifacts --local",
     "db:migrate:remote": "wrangler d1 migrations apply agent-artifacts --remote",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.node.config.ts",
     "test:unit": "vitest run tests/utils.test.ts",
     "test:integration": "vitest run tests/integration.test.ts",
+    "test:skill": "vitest run --config vitest.node.config.ts",
     "e2e": "node scripts/e2e.mjs",
     "access:configure": "node scripts/configure-access.mjs"
   },

@@ -8,6 +8,7 @@ export default defineConfig(async () => ({
     miniflare: { bindings: { ADMIN_TOKEN: "test-admin-token" } },
   })],
   test: {
+    include: ["tests/**/*.test.ts"],
     setupFiles: ["./tests/setup.ts"],
     provide: {
       d1Migrations: await readD1Migrations("./migrations"),
