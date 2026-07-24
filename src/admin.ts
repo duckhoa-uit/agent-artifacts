@@ -8,6 +8,8 @@ import { trackUsage } from "./usage";
 import { error, json, now } from "./utils";
 
 export async function handleAdmin(request: Request, env: AppEnv, admin: AdminContext, path: string, ctx: ExecutionContext): Promise<Response> {
+  const crossSite = rejectCrossSiteMutation(request);
+  if (crossSite) return crossSite;
   if (path === "/v1/admin/session" && request.method === "GET") return json({ authenticated: true, actor: admin.actor, mode: admin.mode });
   if (path === "/v1/admin/overview" && request.method === "GET") return overview(env);
   if (path === "/v1/admin/analytics" && request.method === "GET") return analytics(request, env);
@@ -26,6 +28,16 @@ export async function handleAdmin(request: Request, env: AppEnv, admin: AdminCon
   if (path.startsWith("/v1/admin/shares/") && request.method === "DELETE") return revokeShare(env, admin, path.split("/")[4]);
   if (path === "/v1/admin/audit-logs" && request.method === "GET") return listAuditLogs(request, env);
   return error("Admin route not found", 404, "not_found");
+}
+
+function rejectCrossSiteMutation(request: Request): Response | null {
+  if (!new Set(["POST", "PUT", "PATCH", "DELETE"]).has(request.method)) return null;
+  const origin = request.headers.get("origin");
+  const site = request.headers.get("sec-fetch-site");
+  if (site === "cross-site" || (origin !== null && origin !== new URL(request.url).origin)) {
+    return error("Cross-site admin request rejected", 403, "forbidden");
+  }
+  return null;
 }
 
 async function overview(env: AppEnv): Promise<Response> {

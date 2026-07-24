@@ -6,11 +6,13 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 const [command, ...args] = process.argv.slice(2);
-const baseUrl = (process.env.ARTIFACTS_URL || "").replace(/\/$/, "");
+const configuredBaseUrl = process.env.ARTIFACTS_URL || "";
 const apiKey = process.env.ARTIFACTS_API_KEY;
+let baseUrl = "";
 
 try {
-  if (!baseUrl || !apiKey) throw new Error("ARTIFACTS_URL and ARTIFACTS_API_KEY are required");
+  if (!configuredBaseUrl || !apiKey) throw new Error("ARTIFACTS_URL and ARTIFACTS_API_KEY are required");
+  baseUrl = normalizeBaseUrl(configuredBaseUrl);
   if (command === "upload") await upload(args);
   else if (command === "share") await share(args);
   else if (command === "get") await get(args);
@@ -99,6 +101,14 @@ async function api(method, path, body, extraHeaders = {}) {
 }
 
 async function fileSha256(file) { const hash = createHash("sha256"); for await (const chunk of createReadStream(file)) hash.update(chunk); return hash.digest("hex"); }
+function normalizeBaseUrl(value) {
+  let url;
+  try { url = new URL(value); } catch { throw new Error("ARTIFACTS_URL must be a valid URL"); }
+  const loopback = new Set(["localhost", "127.0.0.1", "[::1]"]).has(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error("ARTIFACTS_URL must use HTTPS (HTTP is allowed only for localhost testing)");
+  if (url.username || url.password || url.search || url.hash) throw new Error("ARTIFACTS_URL must not contain credentials, a query, or a fragment");
+  return url.toString().replace(/\/$/, "");
+}
 async function readExact(handle, buffer, position) { let offset = 0; while (offset < buffer.length) { const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, position + offset); if (!bytesRead) throw new Error("File ended during multipart upload"); offset += bytesRead; } }
 function headers(input) { return Object.fromEntries(Object.entries({ "content-type":input.content_type, "x-filename":input.filename, "x-artifact-sha256":input.sha256, "x-artifact-retention":input.retention, "x-source-agent":input.source_agent, "x-repo":input.repo, "x-pr-number":input.pr_number, "x-task-id":input.task_id, "x-purpose":input.purpose }).filter(([, value]) => value !== undefined)); }
 function flags(values) { const result = {}; for (let index = 0; index < values.length; index += 1) if (values[index]?.startsWith("--")) result[values[index].slice(2)] = values[index + 1]?.startsWith("--") ? true : values[++index]; return result; }

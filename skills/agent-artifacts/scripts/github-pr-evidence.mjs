@@ -33,10 +33,13 @@ try {
   const poster = evidence.find((item) => item.kind === "screenshot")?.url;
   const lines = evidence.map((item) => item.kind === "screenshot" ? `![Screenshot evidence](${item.url})` : poster ? `[![Play video evidence](${poster})](${item.url})` : `- [Open video evidence](${item.url})`);
   const body = ["<!-- agent-evidence:v1 -->", `<!-- agent-artifact-ids:${uploadedIds.join(",")} -->`, "### Agent evidence", ...lines].join("\n");
+  const viewer = (await ghJson(["api", "user"])).login;
   const pages = await ghJson(["api", "--paginate", "--slurp", `repos/${repo}/issues/${pr}/comments`]);
   const comments = Array.isArray(pages?.[0]) ? pages.flat() : pages;
-  const existing = comments.find((comment) => comment.body?.includes("<!-- agent-evidence:v1 -->"));
-  const previousIds = existing?.body?.match(/<!-- agent-artifact-ids:([^>]*) -->/)?.[1]?.split(",").filter(Boolean) ?? [];
+  const existing = comments.find((comment) => comment.user?.login === viewer && comment.body?.includes("<!-- agent-evidence:v1 -->"));
+  const previousIds = (existing?.body?.match(/<!-- agent-artifact-ids:([^>]*) -->/)?.[1]?.split(",") ?? [])
+    .map((value) => value.trim())
+    .filter((value) => /^art_[a-f0-9]{32}$/.test(value));
   if (existing) await gh(["api", "--method", "PATCH", `repos/${repo}/issues/comments/${existing.id}`, "-f", `body=${body}`]);
   else await gh(["api", `repos/${repo}/issues/${pr}/comments`, "-f", `body=${body}`]);
   for (const artifactId of previousIds) await run(process.execPath, [cli, "delete", artifactId]).catch(() => undefined);

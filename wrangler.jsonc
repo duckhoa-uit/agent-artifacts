@@ -21,6 +21,13 @@
       "migrations_dir": "migrations"
     }
   ],
+  "ratelimits": [
+    {
+      "name": "SHARE_DOWNLOAD_RATE_LIMITER",
+      "namespace_id": "7482101",
+      "simple": { "limit": 60, "period": 60 }
+    }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",

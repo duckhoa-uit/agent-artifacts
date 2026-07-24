@@ -107,7 +107,7 @@ async function purgeHistory(env: AppEnv, timestamp: number): Promise<number> {
     env.DB.prepare("DELETE FROM upload_sessions WHERE id IN (SELECT id FROM upload_sessions WHERE status != 'active' AND COALESCE(completed_at, last_activity_at, created_at) < ?1 LIMIT 500)").bind(uploadBefore),
     env.DB.prepare("DELETE FROM shares WHERE id IN (SELECT id FROM shares WHERE COALESCE(revoked_at, expires_at) IS NOT NULL AND COALESCE(revoked_at, expires_at) < ?1 ORDER BY COALESCE(revoked_at, expires_at) LIMIT 500)").bind(tombstoneBefore),
     env.DB.prepare("DELETE FROM artifacts WHERE id IN (SELECT id FROM artifacts WHERE deleted_at < ?1 AND r2_deleted_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM shares WHERE shares.artifact_id = artifacts.id) AND NOT EXISTS (SELECT 1 FROM upload_sessions WHERE upload_sessions.artifact_id = artifacts.id) ORDER BY deleted_at LIMIT 500)").bind(tombstoneBefore),
-    env.DB.prepare("DELETE FROM api_keys WHERE id IN (SELECT id FROM api_keys WHERE COALESCE(revoked_at, expires_at) IS NOT NULL AND COALESCE(revoked_at, expires_at) < ?1 AND NOT EXISTS (SELECT 1 FROM artifacts WHERE artifacts.api_key_id = api_keys.id) ORDER BY COALESCE(revoked_at, expires_at) LIMIT 500)").bind(tombstoneBefore),
+    env.DB.prepare("DELETE FROM api_keys WHERE id IN (SELECT id FROM api_keys WHERE COALESCE(revoked_at, expires_at) IS NOT NULL AND COALESCE(revoked_at, expires_at) < ?1 AND NOT EXISTS (SELECT 1 FROM artifacts WHERE artifacts.api_key_id = api_keys.id) AND NOT EXISTS (SELECT 1 FROM shares WHERE shares.created_by_key_id = api_keys.id) ORDER BY COALESCE(revoked_at, expires_at) LIMIT 500)").bind(tombstoneBefore),
   ]);
   return results.reduce((sum, result) => sum + (result.meta.changes ?? 0), 0);
 }

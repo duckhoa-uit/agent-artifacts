@@ -48,6 +48,13 @@ export const adminShareSchema = shareInputSchema.extend({
 });
 
 export async function parseJson<T>(request: Request, schema: z.ZodType<T>): Promise<{ data: T } | { response: Response }> {
+  const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "application/json") {
+    return { response: new Response(JSON.stringify({ error: { code: "unsupported_media_type", message: "Content-Type must be application/json" } }), {
+      status: 415,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    }) };
+  }
   let body: unknown;
   try {
     body = await request.json();

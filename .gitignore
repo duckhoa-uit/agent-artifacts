@@ -1,6 +1,11 @@
 node_modules/
 .wrangler/
 .dev.vars
-.env*
+.dev.vars.*
+.env
+.env.*
 !.env.example
-worker-startup.cpuprofile
+coverage/
+*.cpuprofile
+*.log
+.DS_Store

@@ -65,6 +65,23 @@ describe("artifact service", () => {
     expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
   });
 
+  it("rate-limits repeated downloads of the same public share", async () => {
+    const key = await issueKey("rate-limit-agent");
+    const artifact = await upload(key.token, new TextEncoder().encode("bounded share"), "bounded.txt");
+    const shareResponse = await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}/shares`, {
+      method: "POST",
+      headers: { ...bearer(key.token), "content-type": "application/json" },
+      body: JSON.stringify({ retention: "temporary" }),
+    });
+    const share = await shareResponse.json<{ url: string }>();
+    for (let index = 0; index < 60; index += 1) {
+      expect((await SELF.fetch(share.url, { method: "HEAD" })).status).toBe(200);
+    }
+    const limited = await SELF.fetch(share.url);
+    expect(limited.status).toBe(429);
+    expect(await limited.json()).toMatchObject({ error: { code: "rate_limited" } });
+  });
+
   it("rejects malformed multipart parts and makes completion idempotent", async () => {
     const key = await issueKey("multipart-agent");
     const size = Number(env.MULTIPART_PART_SIZE_BYTES) + 3;
@@ -94,6 +111,32 @@ describe("artifact service", () => {
     expect((await complete()).status).toBe(200);
   });
 
+  it("caps active multipart sessions per principal", async () => {
+    const key = await issueKey("bounded-multipart-agent");
+    const body = JSON.stringify({
+      filename: "bounded.bin",
+      content_type: "application/octet-stream",
+      size_bytes: Number(env.MULTIPART_PART_SIZE_BYTES) + 1,
+      sha256: "b".repeat(64),
+      retention: "30d",
+    });
+    for (let index = 0; index < 20; index += 1) {
+      const response = await SELF.fetch("https://example.test/v1/uploads", {
+        method: "POST",
+        headers: { ...bearer(key.token), "content-type": "application/json" },
+        body,
+      });
+      expect(response.status).toBe(201);
+    }
+    const limited = await SELF.fetch("https://example.test/v1/uploads", {
+      method: "POST",
+      headers: { ...bearer(key.token), "content-type": "application/json" },
+      body,
+    });
+    expect(limited.status).toBe(429);
+    expect(await limited.json()).toMatchObject({ error: { code: "too_many_active_uploads" } });
+  });
+
   it("cleans expired artifacts and exposes the admin dashboard APIs", async () => {
     const key = await issueKey("cleanup-agent");
     const artifact = await upload(key.token, new TextEncoder().encode("expired"), "expired.txt");
@@ -120,6 +163,27 @@ describe("artifact service", () => {
     expect(await inventory.json()).toMatchObject({ total: expect.any(Number), limit: 1, offset: 0 });
   });
 
+  it("rejects cross-site admin mutations and non-JSON admin bodies", async () => {
+    const crossSite = await SELF.fetch("https://example.test/v1/admin/cleanup", {
+      method: "POST",
+      headers: { ...adminHeaders, origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
+    });
+    expect(crossSite.status).toBe(403);
+
+    const wrongContentType = await SELF.fetch("https://example.test/v1/admin/api-keys", {
+      method: "POST",
+      headers: { ...adminHeaders, origin: "https://example.test", "content-type": "text/plain" },
+      body: JSON.stringify({ owner: "csrf-attempt", scopes: ["artifact:read"] }),
+    });
+    expect(wrongContentType.status).toBe(415);
+
+    const sameOrigin = await SELF.fetch("https://example.test/v1/admin/cleanup", {
+      method: "POST",
+      headers: { ...adminHeaders, origin: "https://example.test", "sec-fetch-site": "same-origin" },
+    });
+    expect(sameOrigin.status).toBe(200);
+  });
+
   it("separates synthetic usage from the admin analytics rollup", async () => {
     const key = await issueKey("synthetic-agent", true);
     const artifact = await upload(key.token, new TextEncoder().encode("analytics"), "analytics.txt");
@@ -135,6 +199,23 @@ describe("artifact service", () => {
     expect(payload.totals.uploads).toBeGreaterThanOrEqual(1);
     expect(payload.totals.downloads).toBeGreaterThanOrEqual(1);
     expect(payload.daily.some((row) => row.synthetic === 1)).toBe(true);
+  });
+
+  it("keeps a revoked key while an active retained share references it", async () => {
+    const uploader = await issueKey("rotation-owner");
+    const rotated = await issueKey("rotation-owner");
+    const artifact = await upload(uploader.token, new TextEncoder().encode("retained"), "retained.txt", "retain");
+    const share = await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}/shares`, {
+      method: "POST",
+      headers: { ...bearer(rotated.token), "content-type": "application/json" },
+      body: JSON.stringify({ retention: "retain" }),
+    });
+    expect(share.status).toBe(201);
+    expect((await SELF.fetch(`https://example.test/v1/admin/api-keys/${rotated.id}`, { method: "DELETE", headers: adminHeaders })).status).toBe(204);
+    await env.DB.prepare("UPDATE api_keys SET revoked_at = 1 WHERE id = ?1").bind(rotated.id).run();
+
+    await expect(runCleanup(env)).resolves.toMatchObject({ failures: 0 });
+    expect(await env.DB.prepare("SELECT id FROM api_keys WHERE id = ?1").bind(rotated.id).first()).not.toBeNull();
   });
 });
 

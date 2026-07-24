@@ -7,6 +7,7 @@ Private artifact storage for Codex, Claude, Hermes, and automation workflows. A 
 - Owner-isolated agent API keys with `artifact:write`, `artifact:read`, `artifact:delete`, and `share:create` scopes.
 - SHA-256-verified direct uploads and size-validated R2 multipart uploads selected from the Worker's advertised capabilities.
 - GET, HEAD, Range, ETag conditionals, private artifacts, and revocable opaque share URLs.
+- Per-share download rate limiting and atomic per-owner multipart-session limits to bound storage abuse.
 - `7d`, `30d`, and `retain` artifact policies with hourly cleanup of expired artifacts, stale multipart sessions, and retryable R2 deletion reconciliation.
 - Cloudflare Access-aware admin console at `/admin` for keys, artifacts, shares, usage analytics, overview metrics, and audit events.
 - Stable principal ownership across API-key rotation, with opt-in synthetic markers so E2E and smoke traffic stays out of production usage totals.
@@ -123,12 +124,12 @@ hermes skills tap add duckhoa-uit/agent-artifacts
 hermes skills install duckhoa-uit/agent-artifacts/agent-artifacts
 ```
 
-For a private repository, provide a read-only GitHub credential through
-`~/.hermes/.env`; never put it in a URL or prompt. Hermes installs the skill
-under `~/.hermes/skills/agent-artifacts`, including only the referenced scripts
-and references; the source repository is not required at runtime. Use the
-`npx skills` command above when the same release is also being installed into
-other agent runtimes. See [the Hermes distribution reference](skills/agent-artifacts/references/hermes.md)
+The public repository installs without a GitHub credential. Hermes installs
+the skill under `~/.hermes/skills/agent-artifacts`, including only the
+referenced scripts and references; the source repository is not required at
+runtime. Use the `npx skills` command above when the same release is also being
+installed into other agent runtimes. See
+[the Hermes distribution reference](skills/agent-artifacts/references/hermes.md)
 for update and verification commands.
 
 Inject `ARTIFACTS_URL` and a profile-scoped `ARTIFACTS_API_KEY` into each
@@ -172,3 +173,14 @@ See [docs/decisions/0001-selective-reuse.md](docs/decisions/0001-selective-reuse
 for upstream provenance and
 [docs/decisions/0002-runtime-hardening.md](docs/decisions/0002-runtime-hardening.md)
 for the delivery and lifecycle boundaries.
+
+## Security
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Never include credentials or private artifact URLs in a public issue.
+
+## License
+
+Licensed under the [MIT License](LICENSE). The deployed service remains private
+by default: publishing this source repository does not bypass its API-key,
+owner-isolation, or Cloudflare Access controls.

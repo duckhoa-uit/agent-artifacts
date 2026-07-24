@@ -17,9 +17,7 @@ hermes skills tap add duckhoa-uit/agent-artifacts
 hermes skills install duckhoa-uit/agent-artifacts/agent-artifacts
 ```
 
-For a private GitHub repository, put a read-only `GITHUB_TOKEN` in the Hermes
-profile environment (for example `~/.hermes/.env`) before installing. Never put
-the token in a command, clone URL, skill file, prompt, or shell history.
+The public repository installs without a GitHub credential.
 
 Verify the source and installation, then check for updates:
 
@@ -39,16 +37,12 @@ Use this route when standardizing installation across Codex, Claude Code, and
 Hermes Agent:
 
 ```bash
-npx skills add git@github.com:duckhoa-uit/agent-artifacts.git \
+npx skills add https://github.com/duckhoa-uit/agent-artifacts.git \
   --skill agent-artifacts \
   --global \
   --agent hermes-agent \
   --yes
 ```
-
-The repository is private, so the VPS must have a read-only GitHub SSH deploy
-key or another GitHub-authenticated git transport. Never put a personal access
-token in a clone URL, skill file, prompt, or shell history.
 
 The installer places the skill in Hermes's global skill directory and includes
 the `SKILL.md` plus the referenced `scripts/` and `references/` files. Hermes

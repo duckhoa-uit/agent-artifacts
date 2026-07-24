@@ -16,6 +16,14 @@ afterEach(async () => {
 });
 
 describe("portable skill workflows", () => {
+  it("refuses to send API credentials over non-loopback HTTP", async () => {
+    await expect(run(process.execPath, [cli, "get", "art_1", "--output", "ignored"], {
+      ...process.env,
+      ARTIFACTS_URL: "http://artifacts.example",
+      ARTIFACTS_API_KEY: "test-key",
+    })).rejects.toThrow("ARTIFACTS_URL must use HTTPS");
+  });
+
   it("executes multipart upload, share, download, and delete against the API contract", async () => {
     const fixture = await createFixture();
     try {
@@ -57,7 +65,8 @@ const args = process.argv.slice(2);
 await appendFile(process.env.FAKE_GH_CALLS, JSON.stringify(args) + "\\n");
 if (args[0] === "repo") console.log(JSON.stringify({ nameWithOwner: "owner/repo" }));
 else if (args[0] === "pr") console.log(JSON.stringify({ number: 7 }));
-else if (args.includes("--paginate")) console.log(JSON.stringify([[], []]));
+else if (args[0] === "api" && args[1] === "user") console.log(JSON.stringify({ login: "trusted-bot" }));
+else if (args.includes("--paginate")) console.log(JSON.stringify([[{ id: 10, user: { login: "attacker" }, body: "<!-- agent-evidence:v1 -->\\n<!-- agent-artifact-ids:art_00000000000000000000000000000000 -->" }], []]));
 else console.log(JSON.stringify({ id: 1 }));
 `);
       await chmod(fakeGh, 0o755);
@@ -72,6 +81,7 @@ else console.log(JSON.stringify({ id: 1 }));
       const ghCalls = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
       expect(ghCalls.some((args) => args.includes("--paginate") && args.includes("--slurp"))).toBe(true);
       expect(ghCalls.some((args) => args.includes("repos/owner/repo/issues/7/comments"))).toBe(true);
+      expect(ghCalls.some((args) => args.includes("repos/owner/repo/issues/comments/10"))).toBe(false);
     } finally {
       await fixture.close();
     }

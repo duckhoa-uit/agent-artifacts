@@ -100,6 +100,9 @@ export async function initMultipart(request: Request, env: AppEnv, ctx: Executio
     ]);
   } catch (cause) {
     await multipart.abort().catch(() => undefined);
+    if (cause instanceof Error && cause.message.includes("too_many_active_uploads")) {
+      return error("At most 20 active multipart uploads are allowed per owner", 429, "too_many_active_uploads");
+    }
     throw cause;
   }
   return json({ upload_id: sessionId, artifact_id: artifactId, part_size_bytes: partSize, total_parts: totalParts }, 201);
@@ -260,6 +263,8 @@ export async function revokeShare(request: Request, env: AppEnv, ctx: ExecutionC
 export async function getSharedArtifact(request: Request, env: AppEnv, ctx: ExecutionContext, token: string): Promise<Response> {
   const share = await env.DB.prepare("SELECT id, artifact_id, expires_at, revoked_at FROM shares WHERE token_hash = ?1").bind(await sha256(token)).first<{ id: string; artifact_id: string; expires_at: number | null; revoked_at: number | null }>();
   if (!share || share.revoked_at || (share.expires_at !== null && share.expires_at <= now())) return error("Share link is invalid or expired", 404, "not_found");
+  const rateLimit = await env.SHARE_DOWNLOAD_RATE_LIMITER.limit({ key: share.id });
+  if (!rateLimit.success) return error("Share download rate limit exceeded", 429, "rate_limited");
   const artifact = await getArtifact(env, share.artifact_id);
   if (!artifact) return error("Artifact not found", 404, "not_found");
   const response = await serveArtifact(request, env, artifact);

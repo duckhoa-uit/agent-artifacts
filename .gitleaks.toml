@@ -1,0 +1,12 @@
+title = "Agent Artifacts gitleaks configuration"
+
+[[allowlists]]
+description = "Cloudflare Access audience IDs are public JWT audience identifiers, not credentials"
+regexTarget = "line"
+paths = [
+  '''(^|/)wrangler\.jsonc$''',
+  '''(^|/)worker-configuration\.d\.ts$''',
+]
+regexes = [
+  '''(?i)\bACCESS_AUD(?:IENCE|IENCES)?\b''',
+]
