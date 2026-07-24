@@ -37,12 +37,19 @@ Use this route when standardizing installation across Codex, Claude Code, and
 Hermes Agent:
 
 ```bash
-npx skills add https://github.com/duckhoa-uit/agent-artifacts.git \
+npx skills add duckhoa-uit/agent-artifacts \
   --skill agent-artifacts \
   --global \
   --agent hermes-agent \
+  --copy \
   --yes
 ```
+
+The current `skills` CLI requires Node.js 22.20 or newer. The public
+repository requires no GitHub credential; `owner/repo` is the shorthand source
+identifier supported by the CLI. See the
+[published skills.sh entry](https://skills.sh/duckhoa-uit/agent-artifacts/agent-artifacts)
+for discovery metadata.
 
 The installer places the skill in Hermes's global skill directory and includes
 the `SKILL.md` plus the referenced `scripts/` and `references/` files. Hermes

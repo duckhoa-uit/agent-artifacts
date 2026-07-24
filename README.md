@@ -100,6 +100,9 @@ Install the self-contained `agent-artifacts` skill from GitHub. The installer
 places `SKILL.md`, its scripts, and its referenced files in the selected agent's
 native skill directory.
 
+Browse the published skill at
+[skills.sh/duckhoa-uit/agent-artifacts/agent-artifacts](https://skills.sh/duckhoa-uit/agent-artifacts/agent-artifacts).
+
 Project-scoped installation:
 
 ```bash
@@ -113,6 +116,7 @@ npx skills add duckhoa-uit/agent-artifacts \
   --skill agent-artifacts \
   --global \
   --agent codex claude-code hermes-agent \
+  --copy \
   --yes
 ```
 
