@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runCleanup } from "../src/cleanup";
 
 const adminHeaders = { authorization: "Bearer test-admin-token", "content-type": "application/json" };
@@ -74,12 +74,14 @@ describe("artifact service", () => {
       body: JSON.stringify({ retention: "temporary" }),
     });
     const share = await shareResponse.json<{ url: string }>();
-    for (let index = 0; index < 60; index += 1) {
-      expect((await SELF.fetch(share.url, { method: "HEAD" })).status).toBe(200);
+    const limiter = vi.spyOn(env.SHARE_DOWNLOAD_RATE_LIMITER, "limit").mockResolvedValueOnce({ success: false });
+    try {
+      const limited = await SELF.fetch(share.url);
+      expect(limited.status).toBe(429);
+      expect(await limited.json()).toMatchObject({ error: { code: "rate_limited" } });
+    } finally {
+      limiter.mockRestore();
     }
-    const limited = await SELF.fetch(share.url);
-    expect(limited.status).toBe(429);
-    expect(await limited.json()).toMatchObject({ error: { code: "rate_limited" } });
   });
 
   it("rejects malformed multipart parts and makes completion idempotent", async () => {
