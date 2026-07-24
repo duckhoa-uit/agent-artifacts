@@ -18,7 +18,7 @@
     "test:unit": "vitest run tests/utils.test.ts",
     "test:integration": "vitest run tests/integration.test.ts",
     "test:skill": "vitest run --config vitest.node.config.ts",
-    "skill:validate": "skills-ref validate skills/agent-artifacts",
+    "skill:validate": "node scripts/validate-skill.mjs",
     "e2e": "node scripts/e2e.mjs",
     "access:configure": "node scripts/configure-access.mjs"
   },

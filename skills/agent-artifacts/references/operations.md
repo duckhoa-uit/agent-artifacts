@@ -75,3 +75,11 @@ expiry for Hermes to return directly.
   isolated principal.
 - GitHub command failure: run `gh auth status`, verify repository access, and
   pass `--pr` or `GITHUB_REPOSITORY` explicitly when auto-detection is wrong.
+
+## Hermes distribution
+
+Install the skill on the Hermes host with Hermes's native Skills Hub flow, or
+with `npx skills add` targeting `hermes-agent` when distributing to several
+agent runtimes. Do not assume a local Codex/Factory installation is visible to
+a remote Hermes VPS. See [hermes.md](hermes.md) for the exact commands and
+profile setup.

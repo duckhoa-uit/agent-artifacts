@@ -96,7 +96,7 @@ client ID and secret only in the CI environment that runs post-deploy E2E.
 ## Agent skill
 
 Install the self-contained `agent-artifacts` skill from GitHub. The installer
-places `SKILL.md`, its scripts, and its reference file in the selected agent's
+places `SKILL.md`, its scripts, and its referenced files in the selected agent's
 native skill directory.
 
 Project-scoped installation:
@@ -115,10 +115,29 @@ npx skills add duckhoa-uit/agent-artifacts \
   --yes
 ```
 
+For a Hermes-only VPS, the native Hermes Skills Hub flow is preferred. Run this
+on that VPS as the Hermes service user:
+
+```bash
+hermes skills tap add duckhoa-uit/agent-artifacts
+hermes skills install duckhoa-uit/agent-artifacts/agent-artifacts
+```
+
+For a private repository, provide a read-only GitHub credential through
+`~/.hermes/.env`; never put it in a URL or prompt. Hermes installs the skill
+under `~/.hermes/skills/agent-artifacts`, including only the referenced scripts
+and references; the source repository is not required at runtime. Use the
+`npx skills` command above when the same release is also being installed into
+other agent runtimes. See [the Hermes distribution reference](skills/agent-artifacts/references/hermes.md)
+for update and verification commands.
+
 Inject `ARTIFACTS_URL` and a profile-scoped `ARTIFACTS_API_KEY` into each
-agent's process. The installed skill chooses and runs its bundled workflow;
-agents do not need the source repository or a globally installed
-`artifactctl`.
+agent's own environment. Hermes declares both variables in the skill
+frontmatter and passes them to its terminal/execute-code sandbox when the skill
+loads. Use separate non-synthetic keys for production Hermes profiles and
+synthetic keys only for disposable smoke/E2E profiles. The installed skill
+chooses and runs its bundled workflow; agents do not need the source repository
+or a globally installed `artifactctl`.
 
 ## CLI
 
