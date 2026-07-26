@@ -1,6 +1,6 @@
 import type { AppEnv, ArtifactRow } from "./types";
 import { audit } from "./db";
-import { claimUploadTransition, deleteArtifactData, releaseUploadTransition } from "./artifacts";
+import { claimUploadTransition, deleteArtifactData, recordCompletedUpload, releaseUploadTransition } from "./artifacts";
 import { now } from "./utils";
 
 interface CleanupResult {
@@ -22,16 +22,17 @@ export async function runCleanup(env: AppEnv): Promise<CleanupResult> {
   let failures = 0;
 
   const interrupted = await env.DB.prepare(
-    "SELECT s.id, s.artifact_id, s.r2_key, s.r2_upload_id, s.operation, a.size_bytes FROM upload_sessions s JOIN artifacts a ON a.id = s.artifact_id WHERE s.status = 'active' AND s.operation IS NOT NULL AND s.operation_started_at <= ?1 ORDER BY s.operation_started_at, s.id LIMIT 100",
-  ).bind(staleBefore).all<{ id: string; artifact_id: string; r2_key: string; r2_upload_id: string; operation: "completing" | "aborting"; size_bytes: number }>();
+    "SELECT s.*, a.size_bytes, a.synthetic FROM upload_sessions s JOIN artifacts a ON a.id = s.artifact_id WHERE s.status = 'active' AND s.operation IS NOT NULL AND s.operation_started_at <= ?1 ORDER BY s.operation_started_at, s.id LIMIT 100",
+  ).bind(staleBefore).all<{ id: string; artifact_id: string; api_key_id: string; principal_id: string; r2_key: string; r2_upload_id: string; total_parts: number; status: "active"; operation: "completing" | "aborting"; operation_started_at: number; size_bytes: number; synthetic: number }>();
   for (const session of interrupted.results) {
     try {
       if (session.operation === "completing") {
         const object = await env.ARTIFACTS.head(session.r2_key);
         if (object?.size === session.size_bytes) {
-          await env.DB.prepare(
-            "UPDATE upload_sessions SET status = 'completed', operation = NULL, operation_started_at = NULL, completed_at = ?1, last_activity_at = ?1 WHERE id = ?2 AND status = 'active' AND operation = 'completing'",
-          ).bind(timestamp, session.id).run();
+          const artifact = await env.DB.prepare("SELECT * FROM artifacts WHERE id = ?1 AND deleted_at IS NULL")
+            .bind(session.artifact_id).first<ArtifactRow>();
+          if (artifact && await recordCompletedUpload(env, session, artifact, object.size)) continue;
+          if (!artifact) await releaseUploadTransition(env, session.id, session.operation);
           continue;
         }
       }

@@ -291,6 +291,58 @@ describe("artifact service", () => {
     expect((await complete()).status).toBe(200);
   });
 
+  it("records normal multipart completion exactly once", async () => {
+    const key = await issueKey("completion-ledger-normal-agent");
+    const session = await initMultipart(key.token, "ledger-normal.bin");
+    await putSingleMultipartPart(key.token, session.upload_id);
+    expect((await completeMultipartRequest(key.token, session.upload_id)).status).toBe(200);
+    expect((await completeMultipartRequest(key.token, session.upload_id)).status).toBe(200);
+    await expectCompletionLedger(session.artifact_id, key, 1);
+  });
+
+  it("recovers an already-written multipart object during a request", async () => {
+    const key = await issueKey("completion-ledger-request-agent");
+    const session = await prepareInterruptedCompletion(key.token, "ledger-request.bin");
+    expect((await completeMultipartRequest(key.token, session.upload_id)).status).toBe(200);
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${session.artifact_id}`, { headers: bearer(key.token) })).status).toBe(200);
+    await expectCompletionLedger(session.artifact_id, key, 1);
+  });
+
+  it("recovers an already-written multipart object during scheduled cleanup", async () => {
+    const key = await issueKey("completion-ledger-scheduled-agent");
+    const session = await prepareInterruptedCompletion(key.token, "ledger-scheduled.bin");
+    const cleanup = await runCleanup(env);
+    expect(cleanup.failures).toBe(0);
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${session.artifact_id}`, { headers: bearer(key.token) })).status).toBe(200);
+    await expectCompletionLedger(session.artifact_id, key, 1);
+  });
+
+  it("coalesces request and scheduled recovery races into one completion event", async () => {
+    const key = await issueKey("completion-ledger-race-agent");
+    const session = await prepareInterruptedCompletion(key.token, "ledger-race.bin");
+    const [request, cleanup] = await Promise.all([
+      completeMultipartRequest(key.token, session.upload_id),
+      runCleanup(env),
+    ]);
+    expect(request.status).toBe(200);
+    expect(cleanup.failures).toBe(0);
+    await expectCompletionLedger(session.artifact_id, key, 1);
+  });
+
+  it("retries a failed completion ledger write without duplicates", async () => {
+    const key = await issueKey("completion-ledger-retry-agent");
+    const session = await prepareInterruptedCompletion(key.token, "ledger-retry.bin");
+    const batch = vi.spyOn(env.DB, "batch").mockRejectedValueOnce(new Error("completion ledger unavailable"));
+    try {
+      expect((await completeMultipartRequest(key.token, session.upload_id)).status).toBe(500);
+      expect(await env.DB.prepare("SELECT status, operation FROM upload_sessions WHERE id = ?1").bind(session.upload_id).first()).toEqual({ status: "active", operation: "completing" });
+    } finally {
+      batch.mockRestore();
+    }
+    expect((await completeMultipartRequest(key.token, session.upload_id)).status).toBe(200);
+    await expectCompletionLedger(session.artifact_id, key, 1);
+  });
+
   it("caps active multipart sessions per principal", async () => {
     const key = await issueKey("bounded-multipart-agent");
     const body = JSON.stringify({
@@ -432,6 +484,43 @@ async function initMultipart(token: string, filename: string): Promise<{ upload_
   });
   expect(response.status).toBe(201);
   return response.json();
+}
+
+async function putSingleMultipartPart(token: string, uploadId: string): Promise<void> {
+  const response = await SELF.fetch(`https://example.test/v1/uploads/${uploadId}/parts/1`, {
+    method: "PUT", headers: { ...bearer(token), "content-length": "1" }, body: new Uint8Array([5]),
+  });
+  expect(response.status).toBe(200);
+}
+
+async function completeMultipartRequest(token: string, uploadId: string): Promise<Response> {
+  return SELF.fetch(`https://example.test/v1/uploads/${uploadId}/complete`, {
+    method: "POST", headers: { ...bearer(token), "content-type": "application/json" }, body: "{}",
+  });
+}
+
+async function prepareInterruptedCompletion(token: string, filename: string): Promise<{ upload_id: string; artifact_id: string }> {
+  const session = await initMultipart(token, filename);
+  await putSingleMultipartPart(token, session.upload_id);
+  const stored = await env.DB.prepare("SELECT r2_key, r2_upload_id FROM upload_sessions WHERE id = ?1").bind(session.upload_id).first<{ r2_key: string; r2_upload_id: string }>();
+  const part = await env.DB.prepare("SELECT part_number, etag FROM upload_parts WHERE upload_id = ?1").bind(session.upload_id).first<{ part_number: number; etag: string }>();
+  expect(stored).not.toBeNull();
+  expect(part).not.toBeNull();
+  await env.ARTIFACTS.resumeMultipartUpload(stored!.r2_key, stored!.r2_upload_id).complete([{ partNumber: part!.part_number, etag: part!.etag }]);
+  await env.DB.prepare("UPDATE upload_sessions SET operation = 'completing', operation_started_at = 1 WHERE id = ?1").bind(session.upload_id).run();
+  return session;
+}
+
+async function expectCompletionLedger(artifactId: string, key: { token: string }, expectedBytes: number): Promise<void> {
+  const events = await env.DB.prepare("SELECT COUNT(*) AS count FROM multipart_completion_events WHERE artifact_id = ?1").bind(artifactId).first<{ count: number }>();
+  expect(events?.count).toBe(1);
+  const audit = await env.DB.prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE event_type = 'artifact.upload.complete' AND artifact_id = ?1").bind(artifactId).first<{ count: number }>();
+  expect(audit?.count).toBe(1);
+  const principal = await env.DB.prepare("SELECT principal_id, synthetic FROM artifacts WHERE id = ?1").bind(artifactId).first<{ principal_id: string; synthetic: number }>();
+  expect(principal).not.toBeNull();
+  const usage = await env.DB.prepare("SELECT request_count, bytes_count FROM usage_daily WHERE principal_id = ?1 AND event_type = 'upload' AND synthetic = ?2").bind(principal!.principal_id, principal!.synthetic).first<{ request_count: number; bytes_count: number }>();
+  expect(usage).toEqual({ request_count: 1, bytes_count: expectedBytes });
+  expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifactId}`, { headers: bearer(key.token) })).status).toBe(200);
 }
 
 function bearer(token: string): Record<string, string> {
