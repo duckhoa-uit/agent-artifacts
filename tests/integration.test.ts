@@ -31,6 +31,61 @@ describe("artifact service", () => {
     expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(rotated.token) })).status).toBe(200);
   });
 
+  it("enforces owner isolation across artifact and multipart mutations", async () => {
+    const first = await issueKey("matrix-owner-one");
+    const second = await issueKey("matrix-owner-two");
+    const body = new TextEncoder().encode("owner matrix");
+
+    const artifact = await upload(first.token, body, "matrix.txt");
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(first.token) })).status).toBe(200);
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { method: "HEAD", headers: bearer(first.token) })).status).toBe(200);
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { headers: bearer(second.token) })).status).toBe(404);
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { method: "HEAD", headers: bearer(second.token) })).status).toBe(404);
+
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { method: "DELETE", headers: bearer(second.token) })).status).toBe(404);
+    const afterDeleteDenial = await env.DB.prepare("SELECT deleted_at FROM artifacts WHERE id = ?1").bind(artifact.id).first<{ deleted_at: number | null }>();
+    expect(afterDeleteDenial?.deleted_at).toBeNull();
+    expect((await SELF.fetch(`https://example.test/v1/artifacts/${artifact.id}`, { method: "DELETE", headers: bearer(first.token) })).status).toBe(204);
+
+    const shareArtifact = await upload(first.token, body, "share-matrix.txt");
+    const sharesBefore = await env.DB.prepare("SELECT COUNT(*) AS count FROM shares WHERE artifact_id = ?1").bind(shareArtifact.id).first<{ count: number }>();
+    const deniedShare = await SELF.fetch(`https://example.test/v1/artifacts/${shareArtifact.id}/shares`, {
+      method: "POST", headers: { ...bearer(second.token), "content-type": "application/json" }, body: JSON.stringify({ retention: "temporary" }),
+    });
+    expect(deniedShare.status).toBe(404);
+    const sharesAfter = await env.DB.prepare("SELECT COUNT(*) AS count FROM shares WHERE artifact_id = ?1").bind(shareArtifact.id).first<{ count: number }>();
+    expect(sharesAfter?.count).toBe(sharesBefore?.count ?? 0);
+    const createdShare = await SELF.fetch(`https://example.test/v1/artifacts/${shareArtifact.id}/shares`, {
+      method: "POST", headers: { ...bearer(first.token), "content-type": "application/json" }, body: JSON.stringify({ retention: "temporary" }),
+    });
+    expect(createdShare.status).toBe(201);
+    const share = await createdShare.json<{ id: string }>();
+    expect((await SELF.fetch(`https://example.test/v1/shares/${share.id}`, { method: "DELETE", headers: bearer(second.token) })).status).toBe(404);
+    expect((await env.DB.prepare("SELECT revoked_at FROM shares WHERE id = ?1").bind(share.id).first<{ revoked_at: number | null }>())?.revoked_at).toBeNull();
+    expect((await SELF.fetch(`https://example.test/v1/shares/${share.id}`, { method: "DELETE", headers: bearer(first.token) })).status).toBe(204);
+
+    const partSession = await initMultipart(first.token, "part-matrix.bin");
+    const partBody = new Uint8Array([7]);
+    expect((await SELF.fetch(`https://example.test/v1/uploads/${partSession.upload_id}/parts/1`, { method: "PUT", headers: { ...bearer(second.token), "content-length": "1" }, body: partBody })).status).toBe(404);
+    const partsAfterDenial = await env.DB.prepare("SELECT COUNT(*) AS count FROM upload_parts WHERE upload_id = ?1").bind(partSession.upload_id).first<{ count: number }>();
+    expect(partsAfterDenial?.count).toBe(0);
+    expect((await SELF.fetch(`https://example.test/v1/uploads/${partSession.upload_id}/parts/1`, { method: "PUT", headers: { ...bearer(first.token), "content-length": "1" }, body: partBody })).status).toBe(200);
+
+    const completeSession = await initMultipart(first.token, "complete-matrix.bin");
+    expect((await SELF.fetch(`https://example.test/v1/uploads/${completeSession.upload_id}/parts/1`, { method: "PUT", headers: { ...bearer(first.token), "content-length": "1" }, body: partBody })).status).toBe(200);
+    expect((await SELF.fetch(`https://example.test/v1/uploads/${completeSession.upload_id}/complete`, { method: "POST", headers: { ...bearer(second.token), "content-type": "application/json" }, body: "{}" })).status).toBe(404);
+    const completeAfterDenial = await env.DB.prepare("SELECT status, operation FROM upload_sessions WHERE id = ?1").bind(completeSession.upload_id).first<{ status: string; operation: string | null }>();
+    expect(completeAfterDenial).toEqual({ status: "active", operation: null });
+    expect((await SELF.fetch(`https://example.test/v1/uploads/${completeSession.upload_id}/complete`, { method: "POST", headers: { ...bearer(first.token), "content-type": "application/json" }, body: "{}" })).status).toBe(200);
+
+    const abortSession = await initMultipart(first.token, "abort-matrix.bin");
+    expect((await SELF.fetch(`https://example.test/v1/uploads/${abortSession.upload_id}`, { method: "DELETE", headers: bearer(second.token) })).status).toBe(404);
+    const abortAfterDenial = await env.DB.prepare("SELECT status, operation FROM upload_sessions WHERE id = ?1").bind(abortSession.upload_id).first<{ status: string; operation: string | null }>();
+    expect(abortAfterDenial).toEqual({ status: "active", operation: null });
+    expect((await SELF.fetch(`https://example.test/v1/uploads/${abortSession.upload_id}`, { method: "DELETE", headers: bearer(first.token) })).status).toBe(204);
+    await runCleanup(env);
+  });
+
   it("verifies small-upload checksums and persists retention", async () => {
     const key = await issueKey("checksum-agent");
     const body = new TextEncoder().encode("checksum protected");
@@ -44,6 +99,83 @@ describe("artifact service", () => {
     expect(row?.retention).toBe("7d");
     expect(row?.expires_at).toBeTypeOf("number");
     expect(row?.checksum_status).toBe("verified");
+  });
+
+  it("cleans up a direct upload after a stored-size mismatch", async () => {
+    const key = await issueKey("size-mismatch-agent");
+    const body = new TextEncoder().encode("size mismatch");
+    const put = vi.spyOn(env.ARTIFACTS, "put").mockResolvedValue({ size: body.length + 1 } as R2Object);
+    try {
+      const response = await SELF.fetch("https://example.test/v1/artifacts", {
+        method: "POST", headers: { ...bearer(key.token), "content-type": "text/plain", "content-length": String(body.length), "x-filename": "mismatch.txt", "x-artifact-sha256": "d".repeat(64) }, body,
+      });
+      expect(response.status).toBe(422);
+      expect(await response.json()).toMatchObject({ error: { code: "size_mismatch" } });
+      const artifact = await env.DB.prepare("SELECT id FROM artifacts WHERE filename = 'mismatch.txt'").first();
+      expect(artifact).toBeNull();
+      expect(await env.ARTIFACTS.head(String(put.mock.calls[0]?.[0]))).toBeNull();
+    } finally {
+      put.mockRestore();
+    }
+  });
+
+  it("returns a deterministic checksum failure from storage", async () => {
+    const key = await issueKey("checksum-failure-agent");
+    const body = new TextEncoder().encode("checksum failure");
+    const put = vi.spyOn(env.ARTIFACTS, "put").mockRejectedValue(new Error("sha256 checksum mismatch"));
+    try {
+      const response = await SELF.fetch("https://example.test/v1/artifacts", {
+        method: "POST", headers: { ...bearer(key.token), "content-type": "text/plain", "content-length": String(body.length), "x-filename": "checksum-failure.txt", "x-artifact-sha256": "e".repeat(64) }, body,
+      });
+      expect(response.status).toBe(422);
+      expect(await response.json()).toMatchObject({ error: { code: "checksum_mismatch" } });
+      expect(await env.DB.prepare("SELECT id FROM artifacts WHERE filename = 'checksum-failure.txt'").first()).toBeNull();
+    } finally {
+      put.mockRestore();
+    }
+  });
+
+  it("reconciles multipart completion and abort failures without losing session state", async () => {
+    const key = await issueKey("multipart-failure-agent");
+    const partBody = new Uint8Array([9]);
+
+    const completion = await initMultipart(key.token, "missing-completion.bin");
+    expect((await SELF.fetch(`https://example.test/v1/uploads/${completion.upload_id}/parts/1`, { method: "PUT", headers: { ...bearer(key.token), "content-length": "1" }, body: partBody })).status).toBe(200);
+    const originalResume = env.ARTIFACTS.resumeMultipartUpload;
+    const completeSpy = vi.spyOn(env.ARTIFACTS, "resumeMultipartUpload").mockImplementation((r2Key, uploadId) => {
+      const multipart = originalResume.call(env.ARTIFACTS, r2Key, uploadId);
+      multipart.complete = vi.fn().mockRejectedValue(new Error("missing completed object"));
+      return multipart;
+    });
+    try {
+      const response = await SELF.fetch(`https://example.test/v1/uploads/${completion.upload_id}/complete`, { method: "POST", headers: { ...bearer(key.token), "content-type": "application/json" }, body: "{}" });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ error: { code: "storage_unavailable" } });
+      expect(await env.DB.prepare("SELECT status, operation FROM upload_sessions WHERE id = ?1").bind(completion.upload_id).first()).toEqual({ status: "active", operation: null });
+      expect((await env.DB.prepare("SELECT deleted_at FROM artifacts WHERE id = ?1").bind(completion.artifact_id).first<{ deleted_at: number | null }>())?.deleted_at).toBeNull();
+      expect(await env.ARTIFACTS.head(`artifacts/${completion.artifact_id}`)).toBeNull();
+    } finally {
+      completeSpy.mockRestore();
+    }
+
+    const abort = await initMultipart(key.token, "failed-abort.bin");
+    const abortSpy = vi.spyOn(env.ARTIFACTS, "resumeMultipartUpload").mockImplementation((r2Key, uploadId) => {
+      const multipart = originalResume.call(env.ARTIFACTS, r2Key, uploadId);
+      multipart.abort = vi.fn().mockRejectedValue(new Error("abort unavailable"));
+      return multipart;
+    });
+    try {
+      const response = await SELF.fetch(`https://example.test/v1/uploads/${abort.upload_id}`, { method: "DELETE", headers: bearer(key.token) });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ error: { code: "upload_abort_failed" } });
+      expect(await env.DB.prepare("SELECT status, operation FROM upload_sessions WHERE id = ?1").bind(abort.upload_id).first()).toEqual({ status: "active", operation: null });
+    } finally {
+      abortSpy.mockRestore();
+    }
+    expect((await SELF.fetch(`https://example.test/v1/uploads/${abort.upload_id}`, { method: "DELETE", headers: bearer(key.token) })).status).toBe(204);
+    expect(await env.DB.prepare("SELECT status, operation FROM upload_sessions WHERE id = ?1").bind(abort.upload_id).first()).toEqual({ status: "aborted", operation: null });
+    expect((await env.DB.prepare("SELECT deleted_at FROM artifacts WHERE id = ?1").bind(abort.artifact_id).first<{ deleted_at: number | null }>())?.deleted_at).toBeTypeOf("number");
+    await runCleanup(env);
   });
 
   it("forces active content to download under a sandboxed response", async () => {
@@ -165,6 +297,17 @@ describe("artifact service", () => {
     expect(await inventory.json()).toMatchObject({ total: expect.any(Number), limit: 1, offset: 0 });
   });
 
+  it("reconciles a soft-deleted artifact that still has an R2 object", async () => {
+    const key = await issueKey("cleanup-reconcile-agent");
+    const artifact = await upload(key.token, new TextEncoder().encode("soft deleted"), "soft-deleted.txt");
+    await env.DB.prepare("UPDATE artifacts SET deleted_at = ?1, r2_deleted_at = NULL WHERE id = ?2").bind(Math.floor(Date.now() / 1000), artifact.id).run();
+
+    const cleanup = await runCleanup(env);
+    expect(cleanup.reconciledObjects).toBeGreaterThanOrEqual(1);
+    expect(await env.ARTIFACTS.head(`artifacts/${artifact.id}`)).toBeNull();
+    expect((await env.DB.prepare("SELECT r2_deleted_at FROM artifacts WHERE id = ?1").bind(artifact.id).first<{ r2_deleted_at: number | null }>())?.r2_deleted_at).toBeTypeOf("number");
+  });
+
   it("rejects cross-site admin mutations and non-JSON admin bodies", async () => {
     const crossSite = await SELF.fetch("https://example.test/v1/admin/cleanup", {
       method: "POST",
@@ -231,6 +374,16 @@ async function upload(token: string, body: Uint8Array, filename: string, retenti
   const bytes = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
   const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((value) => value.toString(16).padStart(2, "0")).join("");
   const response = await SELF.fetch("https://example.test/v1/artifacts", { method: "POST", headers: { ...bearer(token), "content-type": contentType, "content-length": String(body.length), "x-filename": filename, "x-artifact-sha256": hash, "x-artifact-retention": retention }, body: bytes });
+  expect(response.status).toBe(201);
+  return response.json();
+}
+
+async function initMultipart(token: string, filename: string): Promise<{ upload_id: string; artifact_id: string }> {
+  const response = await SELF.fetch("https://example.test/v1/uploads", {
+    method: "POST",
+    headers: { ...bearer(token), "content-type": "application/json" },
+    body: JSON.stringify({ filename, content_type: "application/octet-stream", size_bytes: 1, sha256: "c".repeat(64), retention: "30d" }),
+  });
   expect(response.status).toBe(201);
   return response.json();
 }
