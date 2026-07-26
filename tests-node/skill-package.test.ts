@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { assertReleaseVersion } from "../scripts/validate-skill.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const skill = resolve(root, "skills/agent-artifacts");
@@ -27,6 +28,17 @@ describe("agent-artifacts skill package", () => {
       expect(source).toContain(path);
       await expect(access(resolve(skill, path))).resolves.toBeUndefined();
     }
+  });
+
+  it("keeps package and distributed skill release versions aligned", async () => {
+    const manifest = JSON.parse(await readFile(resolve(root, "package.json"), "utf8")) as { version: string };
+    const source = await readFile(resolve(skill, "SKILL.md"), "utf8");
+    const mismatchedVersion = "0.0.0-test-mismatch";
+
+    expect(assertReleaseVersion(manifest.version, source)).toBe(manifest.version);
+    expect(() => assertReleaseVersion(mismatchedVersion, source)).toThrow(
+      `Release version mismatch: package.json=${mismatchedVersion}, skill=${manifest.version}`,
+    );
   });
 
   it("keeps root CLIs as thin delegates to the bundled scripts", async () => {
