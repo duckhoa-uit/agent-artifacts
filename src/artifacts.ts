@@ -45,6 +45,7 @@ export async function createSmallArtifact(request: Request, env: AppEnv, ctx: Ex
   if (!input.sha256) return error("x-artifact-sha256 is required", 400, "validation_error");
   const artifactId = id("art");
   const r2Key = `artifacts/${artifactId}`;
+  await env.DB.prepare("INSERT INTO pending_artifacts (artifact_id, r2_key, created_at) VALUES (?1, ?2, ?3)").bind(artifactId, r2Key, now()).run();
   let stored: R2Object;
   try {
     stored = await env.ARTIFACTS.put(r2Key, request.body, {
@@ -52,19 +53,20 @@ export async function createSmallArtifact(request: Request, env: AppEnv, ctx: Ex
       sha256: input.sha256,
     });
   } catch (cause) {
+    await compensatePendingObject(env, artifactId, r2Key);
     const reason = cause instanceof Error ? cause.message : "r2_error";
     console.warn(JSON.stringify({ event: "artifact.upload_rejected", artifact_id: artifactId, reason }));
     if (/checksum|sha-?256/i.test(reason)) return error("Artifact checksum did not match the uploaded body", 422, "checksum_mismatch");
     return error("Artifact storage is temporarily unavailable", 503, "storage_unavailable");
   }
   if (stored.size !== length) {
-    await env.ARTIFACTS.delete(r2Key);
+    await compensatePendingObject(env, artifactId, r2Key);
     return error("Stored object size does not match Content-Length", 422, "size_mismatch");
   }
   try {
     await insertArtifact(env, artifactId, auth, r2Key, stored.size, input, "verified");
   } catch (cause) {
-    await env.ARTIFACTS.delete(r2Key);
+    await compensatePendingObject(env, artifactId, r2Key);
     throw cause;
   }
   trackUsage(ctx, env, { principalId: auth.principal_id, synthetic: auth.synthetic, eventType: "upload", bytes: stored.size });
@@ -187,13 +189,7 @@ export async function completeMultipart(request: Request, env: AppEnv, ctx: Exec
     await markUploadAborted(env, session, "completing");
     return error("Completed object size does not match the declared artifact size", 422, "size_mismatch");
   }
-  const completedAt = now();
-  await env.DB.batch([
-    env.DB.prepare("UPDATE upload_sessions SET status = 'completed', operation = NULL, operation_started_at = NULL, completed_at = ?1, last_activity_at = ?1 WHERE id = ?2 AND operation = 'completing'")
-      .bind(completedAt, sessionId),
-    auditStatement(env, "artifact.upload.complete", { apiKeyId: auth.id, principalId: auth.principal_id, synthetic: auth.synthetic, artifactId: artifact.id, metadata: { mode: "multipart", size_bytes: stored.size, checksum: "client_asserted" } }),
-  ]);
-  trackUsage(ctx, env, { principalId: auth.principal_id, synthetic: auth.synthetic, eventType: "upload", bytes: stored.size });
+  await recordCompletedUpload(env, session, artifact, stored.size);
   return completedArtifactResponse(request, env, artifact.id, auth);
 }
 
@@ -334,7 +330,21 @@ async function insertArtifact(env: AppEnv, artifactId: string, auth: AuthContext
       createdAt, retention, retentionExpiry(retention, createdAt), checksumStatus,
     ),
     auditStatement(env, "artifact.upload", { apiKeyId: auth.id, principalId: auth.principal_id, synthetic: auth.synthetic, artifactId, metadata: { mode: "small", size_bytes: sizeBytes, checksum: checksumStatus } }),
+    env.DB.prepare("DELETE FROM pending_artifacts WHERE artifact_id = ?1 AND r2_key = ?2").bind(artifactId, r2Key),
   ]);
+}
+
+async function compensatePendingObject(env: AppEnv, artifactId: string, r2Key: string): Promise<void> {
+  try {
+    await env.ARTIFACTS.delete(r2Key);
+  } catch {
+    return;
+  }
+  try {
+    await env.DB.prepare("DELETE FROM pending_artifacts WHERE artifact_id = ?1 AND r2_key = ?2").bind(artifactId, r2Key).run();
+  } catch {
+    // Keep the durable row for cleanup if its D1 deletion is interrupted.
+  }
 }
 
 async function completedArtifactResponse(request: Request, env: AppEnv, artifactId: string, auth: AuthContext): Promise<Response> {
@@ -389,16 +399,36 @@ export async function releaseUploadTransition(env: AppEnv, sessionId: string, op
   ).bind(sessionId, operation).run();
 }
 
+export async function recordCompletedUpload(env: AppEnv, session: UploadSession, artifact: ArtifactRow, sizeBytes: number): Promise<boolean> {
+  const completedAt = now();
+  const result = await env.DB.batch([
+    env.DB.prepare("UPDATE upload_sessions SET status = 'completed', operation = NULL, operation_started_at = NULL, completed_at = ?1, last_activity_at = ?1 WHERE id = ?2 AND status = 'active' AND operation = 'completing'")
+      .bind(completedAt, session.id),
+    env.DB.prepare(
+      "INSERT OR IGNORE INTO multipart_completion_events (upload_id, artifact_id, principal_id, synthetic, size_bytes, created_at) SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE changes() = 1",
+    ).bind(session.id, artifact.id, session.principal_id, artifact.synthetic, sizeBytes, completedAt),
+    env.DB.prepare(
+      "INSERT INTO audit_logs (event_type, api_key_id, principal_id, artifact_id, metadata, created_at, actor_type, actor_id, synthetic) SELECT 'artifact.upload.complete', ?1, ?2, ?3, ?4, ?5, 'api-key', ?1, ?6 WHERE changes() = 1",
+    ).bind(session.api_key_id, session.principal_id, artifact.id, JSON.stringify({ mode: "multipart", size_bytes: sizeBytes, checksum: "client_asserted", upload_id: session.id }), completedAt, artifact.synthetic),
+    env.DB.prepare(
+      `INSERT INTO usage_daily (day, principal_id, event_type, synthetic, request_count, bytes_count, last_updated_at)
+       SELECT date(?1, 'unixepoch'), ?2, 'upload', ?3, 1, ?4, ?1 WHERE changes() = 1
+       ON CONFLICT(day, principal_id, event_type, synthetic) DO UPDATE SET
+         request_count = request_count + excluded.request_count,
+         bytes_count = bytes_count + excluded.bytes_count,
+         last_updated_at = excluded.last_updated_at`,
+    ).bind(completedAt, session.principal_id, artifact.synthetic, sizeBytes),
+  ]);
+  return result[0]?.meta.changes === 1;
+}
+
 async function recoverCompletedUpload(env: AppEnv, session: UploadSession): Promise<boolean> {
   const object = await env.ARTIFACTS.head(session.r2_key);
   if (!object) return false;
-  const artifact = await env.DB.prepare("SELECT size_bytes FROM artifacts WHERE id = ?1 AND deleted_at IS NULL")
-    .bind(session.artifact_id).first<{ size_bytes: number }>();
+  const artifact = await env.DB.prepare("SELECT * FROM artifacts WHERE id = ?1 AND deleted_at IS NULL")
+    .bind(session.artifact_id).first<ArtifactRow>();
   if (!artifact || object.size !== artifact.size_bytes) return false;
-  const result = await env.DB.prepare(
-    "UPDATE upload_sessions SET status = 'completed', operation = NULL, operation_started_at = NULL, completed_at = ?1, last_activity_at = ?1 WHERE id = ?2 AND status = 'active' AND operation = 'completing'",
-  ).bind(now(), session.id).run();
-  return result.meta.changes === 1;
+  return recordCompletedUpload(env, session, artifact, object.size);
 }
 
 function shouldAuditDownload(request: Request, response: Response): boolean {

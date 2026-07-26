@@ -1,4 +1,6 @@
-const state = { token: sessionStorage.getItem("artifactAdminToken") || "", view: "overview", offsets: { keys:0, artifacts:0, shares:0, audit:0 } };
+import { artifactActionPolicy, BREAK_GLASS_BUFFER_LIMIT_BYTES } from "./artifact-action-policy.js";
+
+const state = { token: sessionStorage.getItem("artifactAdminToken") || "", sessionMode: null, view: "overview", offsets: { keys:0, artifacts:0, shares:0, audit:0 } };
 const pageSize = 50;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -9,6 +11,7 @@ async function api(path, options = {}) {
   if (options.body && !headers.has("content-type")) headers.set("content-type", "application/json");
   const response = await fetch(path, { ...options, headers });
   if (response.status === 401) {
+    state.sessionMode = null;
     $("#healthDot").classList.remove("good");
     $("#sessionLabel").textContent = "Authentication required";
     if (!$("#authDialog").open) $("#authDialog").showModal();
@@ -23,6 +26,7 @@ async function api(path, options = {}) {
 async function connect() {
   try {
     const session = await api("/v1/admin/session");
+    state.sessionMode = session.mode;
     $("#healthDot").classList.add("good");
     $("#sessionLabel").textContent = `${session.actor} · ${session.mode}`;
     await loadView(state.view);
@@ -58,7 +62,7 @@ async function loadKeys() {
 async function loadArtifacts() {
   const query = encodeURIComponent($("#artifactSearch").value.trim());
   const { data, total } = await api(`/v1/admin/artifacts?q=${query}&limit=${pageSize}&offset=${state.offsets.artifacts}`);
-  $("#artifactsTable").innerHTML = data.length ? data.map((item) => { const active = item.state === "active"; return `<tr><td><strong>${escapeHtml(item.filename)}</strong><small class="mono">${escapeHtml(item.id)}</small><small>${escapeHtml(item.repo || item.content_type)}</small></td><td>${escapeHtml(item.owner)}</td><td class="mono">${bytes(item.size_bytes)}</td><td><span class="state ${item.checksum_status === "verified" ? "" : "bad"}">${escapeHtml(item.checksum_status)}</span><small>${escapeHtml(item.state)}</small></td><td><strong>${escapeHtml(item.retention)}</strong><small>${item.expires_at ? date(item.expires_at) : "No expiry"}</small></td><td><div class="actions">${active ? `<button class="button subtle" data-open-artifact="${escapeHtml(item.id)}" data-content-type="${escapeHtml(item.content_type)}">Open</button><button class="button subtle" data-share-artifact="${escapeHtml(item.id)}">Share</button><button class="button danger" data-delete-artifact="${escapeHtml(item.id)}">Delete</button>` : ""}</div></td></tr>`; }).join("") : rowEmpty(6, "No matching artifacts.");
+  $("#artifactsTable").innerHTML = data.length ? data.map((item) => { const active = item.state === "active"; return `<tr><td><strong>${escapeHtml(item.filename)}</strong><small class="mono">${escapeHtml(item.id)}</small><small>${escapeHtml(item.repo || item.content_type)}</small></td><td>${escapeHtml(item.owner)}</td><td class="mono">${bytes(item.size_bytes)}</td><td><span class="state ${item.checksum_status === "verified" ? "" : "bad"}">${escapeHtml(item.checksum_status)}</span><small>${escapeHtml(item.state)}</small></td><td><strong>${escapeHtml(item.retention)}</strong><small>${item.expires_at ? date(item.expires_at) : "No expiry"}</small></td><td><div class="actions">${active ? `<button class="button subtle" data-open-artifact="${escapeHtml(item.id)}" data-content-type="${escapeHtml(item.content_type)}" data-size-bytes="${escapeHtml(item.size_bytes)}">Open</button><button class="button subtle" data-share-artifact="${escapeHtml(item.id)}">Share</button><button class="button danger" data-delete-artifact="${escapeHtml(item.id)}">Delete</button>` : ""}</div></td></tr>`; }).join("") : rowEmpty(6, "No matching artifacts.");
   renderPager("artifacts", total, data.length);
 }
 
@@ -101,29 +105,14 @@ $("#analyticsSynthetic").addEventListener("change", () => loadAnalytics().catch(
 
 document.addEventListener("click", async (event) => {
   const revokeKey = event.target.closest("[data-revoke-key]");
-  const openArtifact = event.target.closest("[data-open-artifact]");
+  const openArtifactButton = event.target.closest("[data-open-artifact]");
   const deleteArtifact = event.target.closest("[data-delete-artifact]");
   const shareArtifact = event.target.closest("[data-share-artifact]");
   const revokeShare = event.target.closest("[data-revoke-share]");
   const page = event.target.closest("[data-page]");
   try {
     if (page) { const view = page.dataset.page; state.offsets[view] = Math.max(0, state.offsets[view] + Number(page.dataset.direction) * pageSize); await loadView(view); }
-    if (openArtifact) {
-      const response = await fetch(`/v1/admin/artifacts/${encodeURIComponent(openArtifact.dataset.openArtifact)}/content`, { headers:state.token ? { authorization:`Bearer ${state.token}` } : {} });
-      if (!response.ok) throw new Error(`Open failed: ${response.status}`);
-      const url = URL.createObjectURL(await response.blob());
-      if (canPreviewInline(openArtifact.dataset.contentType || response.headers.get("content-type") || "")) {
-        window.open(url, "_blank", "noopener,noreferrer");
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      } else {
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = filenameFromDisposition(response.headers.get("content-disposition")) || "artifact";
-        link.click();
-        URL.revokeObjectURL(url);
-        toast("Unsafe active content downloaded instead of opened.");
-      }
-    }
+    if (openArtifactButton) await performArtifactAction(openArtifactButton);
     if (revokeKey && confirm("Revoke this API key immediately?")) { await api(`/v1/admin/api-keys/${encodeURIComponent(revokeKey.dataset.revokeKey)}`, { method:"DELETE" }); await loadKeys(); toast("Key revoked."); }
     if (deleteArtifact && confirm("Delete this artifact and revoke every share?")) { await api(`/v1/admin/artifacts/${encodeURIComponent(deleteArtifact.dataset.deleteArtifact)}`, { method:"DELETE" }); await loadArtifacts(); toast("Artifact deleted."); }
     if (shareArtifact) { const result = await api("/v1/admin/shares", { method:"POST", body:JSON.stringify({ artifact_id:shareArtifact.dataset.shareArtifact, retention:"temporary" }) }); await navigator.clipboard.writeText(result.url); toast("Share URL copied."); }
@@ -131,11 +120,104 @@ document.addEventListener("click", async (event) => {
   } catch (error) { handle(error); }
 });
 
+async function performArtifactAction(button) {
+  const contentType = button.dataset.contentType || "";
+  const policy = artifactActionPolicy({
+    sessionMode: state.sessionMode,
+    contentType,
+    sizeBytes: Number(button.dataset.sizeBytes),
+  });
+  if (policy.delivery === "blocked") throw new Error(policy.message);
+  const contentUrl = `/v1/admin/artifacts/${encodeURIComponent(button.dataset.openArtifact)}/content`;
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = policy.inline ? "Opening…" : "Downloading…";
+  try {
+    if (policy.delivery === "navigate") {
+      window.open(contentUrl, "_blank", "noopener,noreferrer");
+      toast("Streaming artifact preview opened.");
+      return;
+    }
+    if (policy.delivery === "download") {
+      triggerDownload(contentUrl);
+      toast("Artifact download started.");
+      return;
+    }
+
+    // Break-glass bearer credentials cannot be placed in a navigation URL, so
+    // emergency downloads use a strictly bounded in-memory fallback.
+    const response = await fetch(contentUrl, { headers:{ authorization:`Bearer ${state.token}` } });
+    if (!response.ok) throw new Error(`Open failed: ${response.status}`);
+    const blob = await readBoundedBlob(response, BREAK_GLASS_BUFFER_LIMIT_BYTES);
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const disposition = response.headers.get("content-disposition")?.trim().toLowerCase() || "";
+      if (disposition.startsWith("inline")) {
+        window.open(objectUrl, "_blank", "noopener,noreferrer");
+        toast("Artifact preview opened.");
+      } else {
+        triggerDownload(objectUrl, filenameFromDisposition(response.headers.get("content-disposition")) || "artifact");
+        toast("Unsafe active content downloaded instead of opened.");
+      }
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    }
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = originalLabel;
+  }
+}
+
+async function readBoundedBlob(response, limit) {
+  if (!response.body) throw new Error("Artifact response body is unavailable.");
+  const advertisedLength = response.headers.get("content-length");
+  if (advertisedLength !== null) {
+    const parsedLength = Number(advertisedLength);
+    if (!Number.isSafeInteger(parsedLength) || parsedLength < 0) {
+      await response.body.cancel();
+      throw new Error("Artifact response has an invalid Content-Length.");
+    }
+    if (parsedLength > limit) {
+      await response.body.cancel();
+      throw new Error("Break-glass artifact response exceeds the 25 MiB safety limit.");
+    }
+  }
+  const chunks = [];
+  const reader = response.body.getReader();
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel();
+        throw new Error("Break-glass artifact response exceeds the 25 MiB safety limit.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new Blob(chunks, { type:response.headers.get("content-type") || "application/octet-stream" });
+}
+
+function triggerDownload(url, filename) {
+  const link = document.createElement("a");
+  link.href = url;
+  if (filename) link.download = filename;
+  link.rel = "noopener";
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
 function handle(error) { toast(error.message || String(error), true); }
 function toast(message, bad = false) { const node = $("#toast"); node.textContent = message; node.style.background = bad ? "#8f2929" : "#15201b"; node.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => node.classList.remove("show"), 3200); }
 function date(value) { return value ? new Intl.DateTimeFormat(undefined, { dateStyle:"medium", timeStyle:"short" }).format(new Date(value * 1000)) : "Never"; }
 function bytes(value) { if (!value) return "0 B"; const units = ["B","KB","MB","GB","TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
-function canPreviewInline(contentType) { return ["text/plain","application/json","image/png","image/jpeg","image/gif","image/webp","image/avif","video/mp4","video/webm","video/quicktime","audio/mpeg","audio/mp4","audio/ogg","audio/wav"].includes(contentType.split(";", 1)[0].trim().toLowerCase()); }
 function filenameFromDisposition(value) { const encoded = value?.match(/filename\\*=UTF-8''([^;]+)/i)?.[1]; try { return encoded ? decodeURIComponent(encoded) : null; } catch { return null; } }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[char]); }
 function empty(message) { return `<p>${escapeHtml(message)}</p>`; }

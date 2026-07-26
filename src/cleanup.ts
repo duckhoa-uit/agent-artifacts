@@ -1,12 +1,13 @@
 import type { AppEnv, ArtifactRow } from "./types";
 import { audit } from "./db";
-import { claimUploadTransition, deleteArtifactData, releaseUploadTransition } from "./artifacts";
+import { claimUploadTransition, deleteArtifactData, recordCompletedUpload, releaseUploadTransition } from "./artifacts";
 import { now } from "./utils";
 
 interface CleanupResult {
   expiredArtifacts: number;
   staleUploads: number;
   reconciledObjects: number;
+  reconciledPendingObjects: number;
   purgedRows: number;
   failures: number;
 }
@@ -17,19 +18,21 @@ export async function runCleanup(env: AppEnv): Promise<CleanupResult> {
   let staleUploads = 0;
   let expiredArtifacts = 0;
   let reconciledObjects = 0;
+  let reconciledPendingObjects = 0;
   let failures = 0;
 
   const interrupted = await env.DB.prepare(
-    "SELECT s.id, s.artifact_id, s.r2_key, s.r2_upload_id, s.operation, a.size_bytes FROM upload_sessions s JOIN artifacts a ON a.id = s.artifact_id WHERE s.status = 'active' AND s.operation IS NOT NULL AND s.operation_started_at <= ?1 ORDER BY s.operation_started_at, s.id LIMIT 100",
-  ).bind(staleBefore).all<{ id: string; artifact_id: string; r2_key: string; r2_upload_id: string; operation: "completing" | "aborting"; size_bytes: number }>();
+    "SELECT s.*, a.size_bytes, a.synthetic FROM upload_sessions s JOIN artifacts a ON a.id = s.artifact_id WHERE s.status = 'active' AND s.operation IS NOT NULL AND s.operation_started_at <= ?1 ORDER BY s.operation_started_at, s.id LIMIT 100",
+  ).bind(staleBefore).all<{ id: string; artifact_id: string; api_key_id: string; principal_id: string; r2_key: string; r2_upload_id: string; total_parts: number; status: "active"; operation: "completing" | "aborting"; operation_started_at: number; size_bytes: number; synthetic: number }>();
   for (const session of interrupted.results) {
     try {
       if (session.operation === "completing") {
         const object = await env.ARTIFACTS.head(session.r2_key);
         if (object?.size === session.size_bytes) {
-          await env.DB.prepare(
-            "UPDATE upload_sessions SET status = 'completed', operation = NULL, operation_started_at = NULL, completed_at = ?1, last_activity_at = ?1 WHERE id = ?2 AND status = 'active' AND operation = 'completing'",
-          ).bind(timestamp, session.id).run();
+          const artifact = await env.DB.prepare("SELECT * FROM artifacts WHERE id = ?1 AND deleted_at IS NULL")
+            .bind(session.artifact_id).first<ArtifactRow>();
+          if (artifact && await recordCompletedUpload(env, session, artifact, object.size)) continue;
+          if (!artifact) await releaseUploadTransition(env, session.id, session.operation);
           continue;
         }
       }
@@ -92,8 +95,22 @@ export async function runCleanup(env: AppEnv): Promise<CleanupResult> {
     }
   }
 
+  const pendingArtifacts = await env.DB.prepare(
+    "SELECT artifact_id, r2_key FROM pending_artifacts ORDER BY created_at, artifact_id LIMIT 100",
+  ).all<{ artifact_id: string; r2_key: string }>();
+  for (const pending of pendingArtifacts.results) {
+    try {
+      await env.ARTIFACTS.delete(pending.r2_key);
+      await env.DB.prepare("DELETE FROM pending_artifacts WHERE artifact_id = ?1 AND r2_key = ?2").bind(pending.artifact_id, pending.r2_key).run();
+      reconciledPendingObjects += 1;
+    } catch (cause) {
+      failures += 1;
+      logFailure("cleanup.pending_artifact_reconcile_failed", pending.artifact_id, cause);
+    }
+  }
+
   const purgedRows = await purgeHistory(env, timestamp);
-  return { expiredArtifacts, staleUploads, reconciledObjects, purgedRows, failures };
+  return { expiredArtifacts, staleUploads, reconciledObjects, reconciledPendingObjects, purgedRows, failures };
 }
 
 async function purgeHistory(env: AppEnv, timestamp: number): Promise<number> {

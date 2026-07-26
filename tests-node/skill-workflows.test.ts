@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 
 const root = resolve(import.meta.dirname, "..");
@@ -44,6 +46,63 @@ describe("portable skill workflows", () => {
 
       expect(JSON.parse(await run(process.execPath, [cli, "delete", uploaded.id], fixture.env))).toMatchObject({ deleted: true });
       expect(fixture.objects.has("art_1")).toBe(false);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("rejects a download whose decoded byte count differs from Content-Length", async () => {
+    const fixture = await createFixture();
+    try {
+      const directory = await temporaryDirectory();
+      const output = join(directory, "download.txt");
+      await expect(run(process.execPath, [cli, "get", "art_wrong_length", "--output", output], fixture.env))
+        .rejects.toThrow("Downloaded artifact length mismatch");
+      await expect(readFile(output)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await temporaryDownloads(directory)).toEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("rejects a download whose checksum does not match", async () => {
+    const fixture = await createFixture();
+    try {
+      const directory = await temporaryDirectory();
+      const output = join(directory, "download.txt");
+      await expect(run(process.execPath, [cli, "get", "art_wrong_hash", "--output", output], fixture.env))
+        .rejects.toThrow("Downloaded artifact checksum did not match");
+      await expect(readFile(output)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await temporaryDownloads(directory)).toEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("removes the temporary file when a response stream is interrupted", async () => {
+    const fixture = await createFixture();
+    try {
+      const directory = await temporaryDirectory();
+      const output = join(directory, "download.txt");
+      await expect(run(process.execPath, [cli, "get", "art_interrupted", "--output", output], fixture.env))
+        .rejects.toThrow();
+      await expect(readFile(output)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await temporaryDownloads(directory)).toEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("preserves an existing destination when download verification fails", async () => {
+    const fixture = await createFixture();
+    try {
+      const directory = await temporaryDirectory();
+      const output = join(directory, "download.txt");
+      await writeFile(output, "existing");
+      await expect(run(process.execPath, [cli, "get", "art_wrong_hash", "--output", output], fixture.env))
+        .rejects.toThrow("Downloaded artifact checksum did not match");
+      expect(await readFile(output, "utf8")).toBe("existing");
+      expect(await temporaryDownloads(directory)).toEqual([]);
     } finally {
       await fixture.close();
     }
@@ -144,9 +203,35 @@ async function createFixture() {
     if (request.method === "POST" && share) return send(response, 201, { id: "share_1", url: `http://fixture/s/token/${share[1]}` });
     const artifact = /^\/v1\/artifacts\/([^/]+)$/.exec(url.pathname);
     if (artifact && request.method === "GET") {
+      if (artifact[1] === "art_wrong_length") {
+        const value = Buffer.from("hello");
+        const encoded = gzipSync(value);
+        response.writeHead(200, {
+          "content-encoding": "gzip",
+          "content-length": String(encoded.length),
+          "x-artifact-sha256": sha256(value),
+        });
+        return response.end(encoded);
+      }
+      if (artifact[1] === "art_wrong_hash") {
+        const value = Buffer.from("hello");
+        response.writeHead(200, {
+          "content-length": String(value.length),
+          "x-artifact-sha256": "0".repeat(64),
+        });
+        return response.end(value);
+      }
+      if (artifact[1] === "art_interrupted") {
+        response.writeHead(200, {
+          "content-length": "5",
+          "x-artifact-sha256": sha256(Buffer.from("hello")),
+        });
+        response.write("he", () => response.destroy());
+        return;
+      }
       const value = objects.get(artifact[1]);
       if (!value) return send(response, 404, {});
-      response.writeHead(200, { "content-length": String(value.length) });
+      response.writeHead(200, { "content-length": String(value.length), "x-artifact-sha256": sha256(value) });
       return response.end(value);
     }
     if (artifact && request.method === "DELETE") {
@@ -176,6 +261,14 @@ async function body(request: IncomingMessage): Promise<Buffer> {
 function send(response: ServerResponse, status: number, payload: unknown) {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(payload));
+}
+
+function sha256(value: Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function temporaryDownloads(directory: string): Promise<string[]> {
+  return (await readdir(directory)).filter((name) => name.endsWith(".tmp"));
 }
 
 async function temporaryDirectory(): Promise<string> {
