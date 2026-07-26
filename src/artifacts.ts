@@ -45,6 +45,7 @@ export async function createSmallArtifact(request: Request, env: AppEnv, ctx: Ex
   if (!input.sha256) return error("x-artifact-sha256 is required", 400, "validation_error");
   const artifactId = id("art");
   const r2Key = `artifacts/${artifactId}`;
+  await env.DB.prepare("INSERT INTO pending_artifacts (artifact_id, r2_key, created_at) VALUES (?1, ?2, ?3)").bind(artifactId, r2Key, now()).run();
   let stored: R2Object;
   try {
     stored = await env.ARTIFACTS.put(r2Key, request.body, {
@@ -52,19 +53,20 @@ export async function createSmallArtifact(request: Request, env: AppEnv, ctx: Ex
       sha256: input.sha256,
     });
   } catch (cause) {
+    await compensatePendingObject(env, artifactId, r2Key);
     const reason = cause instanceof Error ? cause.message : "r2_error";
     console.warn(JSON.stringify({ event: "artifact.upload_rejected", artifact_id: artifactId, reason }));
     if (/checksum|sha-?256/i.test(reason)) return error("Artifact checksum did not match the uploaded body", 422, "checksum_mismatch");
     return error("Artifact storage is temporarily unavailable", 503, "storage_unavailable");
   }
   if (stored.size !== length) {
-    await env.ARTIFACTS.delete(r2Key);
+    await compensatePendingObject(env, artifactId, r2Key);
     return error("Stored object size does not match Content-Length", 422, "size_mismatch");
   }
   try {
     await insertArtifact(env, artifactId, auth, r2Key, stored.size, input, "verified");
   } catch (cause) {
-    await env.ARTIFACTS.delete(r2Key);
+    await compensatePendingObject(env, artifactId, r2Key);
     throw cause;
   }
   trackUsage(ctx, env, { principalId: auth.principal_id, synthetic: auth.synthetic, eventType: "upload", bytes: stored.size });
@@ -334,7 +336,21 @@ async function insertArtifact(env: AppEnv, artifactId: string, auth: AuthContext
       createdAt, retention, retentionExpiry(retention, createdAt), checksumStatus,
     ),
     auditStatement(env, "artifact.upload", { apiKeyId: auth.id, principalId: auth.principal_id, synthetic: auth.synthetic, artifactId, metadata: { mode: "small", size_bytes: sizeBytes, checksum: checksumStatus } }),
+    env.DB.prepare("DELETE FROM pending_artifacts WHERE artifact_id = ?1 AND r2_key = ?2").bind(artifactId, r2Key),
   ]);
+}
+
+async function compensatePendingObject(env: AppEnv, artifactId: string, r2Key: string): Promise<void> {
+  try {
+    await env.ARTIFACTS.delete(r2Key);
+  } catch {
+    return;
+  }
+  try {
+    await env.DB.prepare("DELETE FROM pending_artifacts WHERE artifact_id = ?1 AND r2_key = ?2").bind(artifactId, r2Key).run();
+  } catch {
+    // Keep the durable row for cleanup if its D1 deletion is interrupted.
+  }
 }
 
 async function completedArtifactResponse(request: Request, env: AppEnv, artifactId: string, auth: AuthContext): Promise<Response> {

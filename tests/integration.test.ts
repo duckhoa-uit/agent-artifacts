@@ -114,6 +114,7 @@ describe("artifact service", () => {
       const artifact = await env.DB.prepare("SELECT id FROM artifacts WHERE filename = 'mismatch.txt'").first();
       expect(artifact).toBeNull();
       expect(await env.ARTIFACTS.head(String(put.mock.calls[0]?.[0]))).toBeNull();
+      expect(await env.DB.prepare("SELECT artifact_id FROM pending_artifacts WHERE r2_key = ?1").bind(String(put.mock.calls[0]?.[0])).first()).toBeNull();
     } finally {
       put.mockRestore();
     }
@@ -130,8 +131,53 @@ describe("artifact service", () => {
       expect(response.status).toBe(422);
       expect(await response.json()).toMatchObject({ error: { code: "checksum_mismatch" } });
       expect(await env.DB.prepare("SELECT id FROM artifacts WHERE filename = 'checksum-failure.txt'").first()).toBeNull();
+      expect(await env.DB.prepare("SELECT artifact_id FROM pending_artifacts WHERE r2_key = ?1").bind(String(put.mock.calls[0]?.[0])).first()).toBeNull();
     } finally {
       put.mockRestore();
+    }
+  });
+
+  it("durably retries direct-upload compensation after metadata and R2 failures", async () => {
+    const key = await issueKey("pending-retry-agent");
+    const body = new TextEncoder().encode("pending retry");
+    const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", body))].map((value) => value.toString(16).padStart(2, "0")).join("");
+    const batch = vi.spyOn(env.DB, "batch").mockRejectedValueOnce(new Error("metadata finalization failed"));
+    const originalDelete = env.ARTIFACTS.delete;
+    const remove = vi.spyOn(env.ARTIFACTS, "delete")
+      .mockRejectedValueOnce(new Error("immediate cleanup failed"))
+      .mockRejectedValueOnce(new Error("first scheduled cleanup failed"))
+      .mockImplementation((r2Key) => originalDelete.call(env.ARTIFACTS, r2Key));
+    try {
+      const response = await SELF.fetch("https://example.test/v1/artifacts", {
+        method: "POST", headers: { ...bearer(key.token), "content-type": "text/plain", "content-length": String(body.length), "x-filename": "pending-retry.txt", "x-artifact-sha256": hash }, body,
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ error: { code: "internal_error" } });
+
+      const pending = await env.DB.prepare("SELECT artifact_id, r2_key FROM pending_artifacts WHERE r2_key LIKE 'artifacts/%' ORDER BY created_at DESC LIMIT 1").first<{ artifact_id: string; r2_key: string }>();
+      expect(pending).not.toBeNull();
+      expect(await env.ARTIFACTS.head(pending!.r2_key)).not.toBeNull();
+      expect((await SELF.fetch(`https://example.test/v1/artifacts/${pending!.artifact_id}`, { headers: bearer(key.token) })).status).toBe(404);
+      expect((await SELF.fetch(`https://example.test/v1/artifacts/${pending!.artifact_id}/shares`, {
+        method: "POST", headers: { ...bearer(key.token), "content-type": "application/json" }, body: JSON.stringify({ retention: "temporary" }),
+      })).status).toBe(404);
+      const inventory = await SELF.fetch("https://example.test/v1/admin/artifacts?q=pending-retry.txt", { headers: adminHeaders });
+      expect(inventory.status).toBe(200);
+      expect((await inventory.json<{ data: unknown[] }>()).data).toHaveLength(0);
+
+      const firstCleanup = await runCleanup(env);
+      expect(firstCleanup.reconciledPendingObjects).toBe(0);
+      expect(firstCleanup.failures).toBeGreaterThanOrEqual(1);
+      expect(await env.DB.prepare("SELECT artifact_id FROM pending_artifacts WHERE artifact_id = ?1").bind(pending!.artifact_id).first()).not.toBeNull();
+
+      const secondCleanup = await runCleanup(env);
+      expect(secondCleanup.reconciledPendingObjects).toBe(1);
+      expect(secondCleanup.failures).toBe(0);
+      expect(await env.DB.prepare("SELECT artifact_id FROM pending_artifacts WHERE artifact_id = ?1").bind(pending!.artifact_id).first()).toBeNull();
+      expect(await env.ARTIFACTS.head(pending!.r2_key)).toBeNull();
+    } finally {
+      batch.mockRestore();
+      remove.mockRestore();
     }
   });
 

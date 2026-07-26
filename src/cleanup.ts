@@ -7,6 +7,7 @@ interface CleanupResult {
   expiredArtifacts: number;
   staleUploads: number;
   reconciledObjects: number;
+  reconciledPendingObjects: number;
   purgedRows: number;
   failures: number;
 }
@@ -17,6 +18,7 @@ export async function runCleanup(env: AppEnv): Promise<CleanupResult> {
   let staleUploads = 0;
   let expiredArtifacts = 0;
   let reconciledObjects = 0;
+  let reconciledPendingObjects = 0;
   let failures = 0;
 
   const interrupted = await env.DB.prepare(
@@ -92,8 +94,22 @@ export async function runCleanup(env: AppEnv): Promise<CleanupResult> {
     }
   }
 
+  const pendingArtifacts = await env.DB.prepare(
+    "SELECT artifact_id, r2_key FROM pending_artifacts ORDER BY created_at, artifact_id LIMIT 100",
+  ).all<{ artifact_id: string; r2_key: string }>();
+  for (const pending of pendingArtifacts.results) {
+    try {
+      await env.ARTIFACTS.delete(pending.r2_key);
+      await env.DB.prepare("DELETE FROM pending_artifacts WHERE artifact_id = ?1 AND r2_key = ?2").bind(pending.artifact_id, pending.r2_key).run();
+      reconciledPendingObjects += 1;
+    } catch (cause) {
+      failures += 1;
+      logFailure("cleanup.pending_artifact_reconcile_failed", pending.artifact_id, cause);
+    }
+  }
+
   const purgedRows = await purgeHistory(env, timestamp);
-  return { expiredArtifacts, staleUploads, reconciledObjects, purgedRows, failures };
+  return { expiredArtifacts, staleUploads, reconciledObjects, reconciledPendingObjects, purgedRows, failures };
 }
 
 async function purgeHistory(env: AppEnv, timestamp: number): Promise<number> {
