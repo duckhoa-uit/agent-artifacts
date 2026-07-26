@@ -59,40 +59,30 @@ direct or multipart upload without duplicating deployment limits.
 
 ## Deploy
 
-Create the private R2 bucket and D1 database named in `wrangler.jsonc`, then run:
+The committed `wrangler.jsonc` describes the existing production instance.
+Its Worker name, R2 bucket, D1 database ID, and Cloudflare Access values are
+deployment state, not portable defaults.
 
-```bash
-npm run db:migrate:remote
-npm run deploy
-```
+### Operate the existing production instance
 
-Set the Worker secret separately:
+Do not replace the committed bindings or Access values. Run the read-only
+production preflight in [the deployment guide](docs/DEPLOYMENT.md), then use
+the repository's manually dispatched `Deploy` workflow. The workflow applies
+remote D1 migrations before deploying the Worker and finishes with live E2E
+verification.
 
-```bash
-npx wrangler secret put ADMIN_TOKEN
-```
+### Create a separate instance
 
-For production admin access, create a Cloudflare Access service token for CI.
-With a temporary provisioning API token that has `Access: Apps and Policies
-Write`, `Access: Organizations, Identity Providers, and Groups Read`, and
-`Access: Service Tokens Read`, use the idempotent bootstrap helper. It creates
-one self-hosted application for both admin destinations, the administrator
-email policy, and a Service Auth policy restricted to the exact E2E token:
+Do not deploy the committed account-specific values into another Cloudflare
+account. Follow [the fresh-instance procedure](docs/DEPLOYMENT.md#provision-a-separate-instance)
+to create a new private R2 bucket and D1 database, replace the D1 database ID
+and other deployment-specific values, configure Access for the new Worker
+hostname, verify every binding, apply migrations, and deploy with the required
+Worker secret supplied outside the repository. Resource names alone do not
+select a D1 database.
 
-```bash
-export CLOUDFLARE_ACCOUNT_ID=...
-export CLOUDFLARE_API_TOKEN=...
-export ARTIFACTS_URL=https://agent-artifacts.example.workers.dev
-export ACCESS_ALLOWED_EMAIL=you@example.com
-export ARTIFACTS_E2E_ACCESS_CLIENT_ID=...access
-node scripts/configure-access.mjs
-node scripts/configure-access.mjs --apply
-```
-
-Set the printed `ACCESS_TEAM_DOMAIN` and `ACCESS_AUDIENCE` in `wrangler.jsonc`, then deploy. The Worker validates the `Cf-Access-Jwt-Assertion`; `ADMIN_TOKEN` remains a break-glass path for operational recovery and E2E.
-
-The service-token secret is not needed by the bootstrap helper. Store the
-client ID and secret only in the CI environment that runs post-deploy E2E.
+Never add Cloudflare credentials, the break-glass admin secret, or agent API
+keys to `wrangler.jsonc`, `.env.example`, or another committed file.
 
 ## Agent skill
 
