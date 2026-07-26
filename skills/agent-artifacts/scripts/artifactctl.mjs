@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { open, readFile, stat } from "node:fs/promises";
-import { Readable } from "node:stream";
+import { open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 const [command, ...args] = process.argv.slice(2);
@@ -79,8 +80,40 @@ async function get(values) {
   if (!artifactId || !output) throw new Error("Usage: artifactctl get ARTIFACT_ID --output FILE");
   const response = await fetch(`${baseUrl}/v1/artifacts/${encodeURIComponent(artifactId)}`, { headers:{ authorization:`Bearer ${apiKey}` } });
   if (!response.ok || !response.body) throw new Error(await response.text());
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(output));
-  print({ artifact_id:artifactId, output, bytes:(await stat(output)).size });
+  const expectedLength = response.headers.get("content-length");
+  const expectedSha256 = response.headers.get("x-artifact-sha256");
+  if (expectedLength === null && expectedSha256 === null) throw new Error("Artifact response did not include Content-Length or x-artifact-sha256");
+  const destination = resolve(output);
+  const temporary = resolve(dirname(destination), `.${basename(destination)}.${process.pid}-${randomUUID()}.tmp`);
+  const hash = createHash("sha256");
+  let bytes = 0;
+  const verifier = new Transform({
+    transform(chunk, _encoding, callback) {
+      bytes += chunk.length;
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+  try {
+    await pipeline(Readable.fromWeb(response.body), verifier, createWriteStream(temporary, { flags:"wx" }));
+    if (expectedLength !== null) {
+      const length = Number(expectedLength);
+      if (!Number.isSafeInteger(length) || length < 0) throw new Error("Artifact response Content-Length is invalid");
+      if (bytes !== length) throw new Error(`Downloaded artifact length mismatch: expected ${length} bytes, received ${bytes}`);
+    }
+    const actualSha256 = hash.digest("hex");
+    if (expectedSha256 !== null) {
+      if (!/^[a-f0-9]{64}$/i.test(expectedSha256)) throw new Error("Artifact response checksum is invalid");
+      if (actualSha256 !== expectedSha256.toLowerCase()) throw new Error("Downloaded artifact checksum did not match x-artifact-sha256");
+    }
+    await rename(temporary, destination);
+  } catch (cause) {
+    await unlink(temporary).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+    throw cause;
+  }
+  print({ artifact_id:artifactId, output, bytes });
 }
 
 async function remove(values) {
