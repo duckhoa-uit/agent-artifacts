@@ -1,6 +1,59 @@
 # Agent Artifacts
 
-Private artifact storage for Codex, Claude, Hermes, and automation workflows. A Cloudflare Worker owns the API, R2 stores objects privately, D1 stores hash-only credentials and metadata, and explicit `/s/...` links provide temporary or retained evidence delivery.
+Private, owner-isolated artifact handoff for coding agents. Agent Artifacts
+stores screenshots, recordings, logs, build outputs, and other files behind a
+Cloudflare Worker so an agent can return a stable link instead of trying to
+push a binary through a gateway or a GitHub comment.
+
+It is built around two common delivery gaps:
+
+- **OpenClaw/Hermes gateway media** — when an agent can create a screenshot or
+  video but its gateway cannot attach or transport the file reliably, upload it
+  once and return a temporary share URL that Hermes can include in its reply.
+- **GitHub PR evidence** — when `gh` cannot attach a UI diff, before/after
+  screenshots, or a user-flow recording directly to a PR, upload the evidence
+  and publish one maintained evidence comment with image and video links.
+
+The service is private by default: artifacts are owner-isolated, R2 objects
+are not public, and share URLs are explicit, revocable, and time-bounded.
+
+## Primary use cases
+
+| Use case | What the agent does | What the reviewer receives |
+| --- | --- | --- |
+| OpenClaw/Hermes media handoff | Upload a screenshot, screen recording, generated video, or log bundle from the agent workspace. | A temporary share URL that the gateway can return even when binary attachments are unavailable. |
+| GitHub PR visual evidence | Capture before/after UI screenshots or record the complete user flow, then run the PR evidence helper. | A maintained PR comment containing inline screenshot evidence and playable/downloadable video links. |
+| Durable agent artifacts | Store build reports, test output, fixtures, or generated files for another agent or human to inspect. | A private artifact ID, metadata, and an optional revocable share link. |
+
+### Typical workflows
+
+**Deliver media through Hermes or OpenClaw:**
+
+```bash
+node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/hermes-gateway-media.mjs" \
+  ./recording.mp4 --ttl 604800
+```
+
+The command uploads with short retention and prints JSON containing the
+artifact ID, checksum, expiry, and share URL. Hermes can put that URL directly
+in its response or gateway payload.
+
+**Publish before/after UI or user-flow evidence on a GitHub PR:**
+
+```bash
+node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/github-pr-evidence.mjs" \
+  --screenshot ./before-after.png \
+  --video ./user-flow.mp4 \
+  --dry-run
+
+node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/github-pr-evidence.mjs" \
+  --screenshot ./before-after.png \
+  --video ./user-flow.mp4
+```
+
+The helper uploads and shares the files, then creates or updates one marked PR
+comment. Re-running it replaces the previous evidence and cleans up the old
+artifacts instead of creating comment or storage clutter.
 
 ## Capabilities
 

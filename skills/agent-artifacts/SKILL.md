@@ -1,6 +1,6 @@
 ---
 name: agent-artifacts
-description: Store and share coding-agent artifacts securely.
+description: Secure artifact handoff for coding agents, including Hermes/OpenClaw media and GitHub PR evidence.
 compatibility: Requires Node.js 22 or newer, network access to the configured Worker, ARTIFACTS_URL, and a scoped ARTIFACTS_API_KEY. GitHub PR evidence additionally requires an authenticated gh CLI.
 required_environment_variables:
   - name: ARTIFACTS_URL
@@ -19,7 +19,10 @@ metadata:
 # Agent Artifacts Skill
 
 Use the bundled scripts to persist files outside the coding workspace and return
-stable metadata or revocable share links. Resolve the directory containing this
+stable metadata or revocable share links. This is especially useful when
+OpenClaw or Hermes cannot transport a screenshot/video through its gateway, or
+when a GitHub PR needs before/after UI evidence or a recorded user flow.
+Resolve the directory containing this
 `SKILL.md` and use its absolute path as `AGENT_ARTIFACTS_SKILL_DIR` in the
 commands below; do not assume the current working directory is the skill
 directory.

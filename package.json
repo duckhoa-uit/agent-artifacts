@@ -1,6 +1,7 @@
 {
   "name": "agent-artifacts",
   "version": "0.3.0",
+  "description": "Private artifact handoff for coding agents, Hermes/OpenClaw media delivery, and GitHub PR evidence.",
   "private": true,
   "type": "module",
   "bin": {
