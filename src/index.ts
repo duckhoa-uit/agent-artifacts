@@ -23,9 +23,14 @@ export default {
       if (path === "/healthz" && request.method === "GET") {
         response = json({ ok: true, service: "agent-artifacts" });
       } else if (path === "/v1/capabilities" && request.method === "GET") {
+        const multipartPartSizeBytes = Number(env.MULTIPART_PART_SIZE_BYTES);
+        const maxMultipartParts = 10_000;
         response = json({
           max_small_upload_bytes: Number(env.MAX_SMALL_UPLOAD_BYTES),
-          multipart_part_size_bytes: Number(env.MULTIPART_PART_SIZE_BYTES),
+          multipart_part_size_bytes: multipartPartSizeBytes,
+          max_multipart_parts: maxMultipartParts,
+          max_multipart_upload_bytes: multipartPartSizeBytes * maxMultipartParts,
+          supports_resume: true,
           default_share_ttl_seconds: Number(env.DEFAULT_SHARE_TTL_SECONDS),
           retention: ["7d", "30d", "retain"],
         });

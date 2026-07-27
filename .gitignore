@@ -8,4 +8,5 @@ node_modules/
 coverage/
 *.cpuprofile
 *.log
+*.artifact-upload.json
 .DS_Store

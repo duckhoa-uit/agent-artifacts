@@ -30,6 +30,7 @@ because they clean up artifacts when later delivery fails.
 artifactctl upload FILE [--purpose PURPOSE] [--retention 7d|30d|retain]
                     [--content-type TYPE] [--source-agent NAME]
                     [--repo OWNER/REPO] [--pr NUMBER] [--task-id ID]
+                    [--concurrency 1..8] [--resume]
 artifactctl share ARTIFACT_ID [--retention retain|temporary]
                               [--expires SECONDS]
 artifactctl get ARTIFACT_ID --output FILE
@@ -38,7 +39,10 @@ artifactctl delete ARTIFACT_ID
 
 Successful commands write one JSON object to stdout. The CLI reads the deployed
 Worker's capabilities and uses multipart upload above its advertised direct-upload
-limit.
+limit. Multipart parts retry independently, upload with bounded concurrency, and
+persist a per-file manifest beside the source file. If an upload is interrupted,
+run the same command with `--resume`; the manifest is removed after completion.
+The manifest contains upload identifiers and part ETags, but never an API key.
 
 For a coding-agent smoke test, upload a real file with a quoted path, parse the
 returned `artifact_id`, download it to a separate path, and compare size and

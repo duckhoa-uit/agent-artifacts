@@ -125,7 +125,7 @@ prompt, skill file, or committed repository.
 ## Capabilities
 
 - Owner-isolated agent API keys with `artifact:write`, `artifact:read`, `artifact:delete`, and `share:create` scopes.
-- SHA-256-verified direct uploads and size-validated R2 multipart uploads selected from the Worker's advertised capabilities.
+- SHA-256-verified direct uploads and resumable, size-validated R2 multipart uploads selected from the Worker's advertised capabilities.
 - GET, HEAD, Range, ETag conditionals, private artifacts, and revocable opaque share URLs.
 - Per-share download rate limiting and atomic per-owner multipart-session limits to bound storage abuse.
 - `7d`, `30d`, and `retain` artifact policies with hourly cleanup of expired artifacts, stale multipart sessions, and retryable R2 deletion reconciliation.
@@ -157,7 +157,7 @@ other values in the environment where they are used, not in the repository.
 | `ARTIFACTS_API_KEY` | `artifactctl` and agent skills | For private artifact operations | Profile-scoped key created in the admin UI. |
 | `ADMIN_TOKEN` | Worker secret, local admin UI | Optional with Cloudflare Access | Break-glass admin authentication. |
 | `MAX_SMALL_UPLOAD_BYTES` | Worker | Yes | Maximum size for a direct upload. |
-| `MULTIPART_PART_SIZE_BYTES` | Worker | Yes | Size of each multipart upload part. |
+| `MULTIPART_PART_SIZE_BYTES` | Worker | Yes | Size of each multipart upload part; the Worker advertises the derived 10,000-part maximum through `/v1/capabilities`. |
 | `DEFAULT_SHARE_TTL_SECONDS` | Worker | Yes | Default lifetime of temporary share links. |
 | `UPLOAD_SESSION_TTL_SECONDS` | Worker | Yes | Age after which inactive multipart sessions are cleaned up. |
 | `ACCESS_TEAM_DOMAIN` | Worker | Yes for Access admin | Cloudflare Access team domain used to verify JWTs. |
@@ -224,14 +224,17 @@ export ARTIFACTS_URL=https://agent-artifacts.example.workers.dev
 export ARTIFACTS_API_KEY=ak_live_...
 
 node cli/artifactctl.mjs upload screenshot.png --purpose pr-evidence --retention retain
+node cli/artifactctl.mjs upload large-recording.mp4 --purpose pr-evidence --concurrency 3
+# If a large upload is interrupted, continue its saved manifest:
+node cli/artifactctl.mjs upload large-recording.mp4 --resume
 node cli/artifactctl.mjs share ARTIFACT_ID --retention retain
 node cli/artifactctl.mjs get ARTIFACT_ID --output ./download.png
 node cli/artifactctl.mjs delete ARTIFACT_ID
 ```
 
-Downloads stream to disk. Multipart failures trigger a retryable abort, files
-are checked for mutation during upload, and wrapper failures delete artifacts
-they created.
+Downloads stream to disk. Multipart uploads retry failed parts, save a local
+manifest for `--resume`, and allow bounded concurrency. Files are checked for
+mutation during upload, and wrapper failures delete artifacts they created.
 
 ## Verification
 

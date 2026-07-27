@@ -6,6 +6,18 @@ import { runCleanup } from "../src/cleanup";
 const adminHeaders = { authorization: "Bearer test-admin-token", "content-type": "application/json" };
 
 describe("artifact service", () => {
+  it("advertises direct and resumable multipart upload limits", async () => {
+    const response = await SELF.fetch("https://example.test/v1/capabilities");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      max_small_upload_bytes: Number(env.MAX_SMALL_UPLOAD_BYTES),
+      multipart_part_size_bytes: Number(env.MULTIPART_PART_SIZE_BYTES),
+      max_multipart_parts: 10_000,
+      max_multipart_upload_bytes: Number(env.MULTIPART_PART_SIZE_BYTES) * 10_000,
+      supports_resume: true,
+    });
+  });
+
   it("keeps artifacts private to their owner and revokes keys immediately", async () => {
     const first = await issueKey("agent-one");
     const second = await issueKey("agent-two");

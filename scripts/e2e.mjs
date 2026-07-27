@@ -17,6 +17,7 @@ try {
   assert(health.ok === true, "healthz");
   const capabilities = await request("GET", "/v1/capabilities");
   assert(capabilities.max_small_upload_bytes > 0 && capabilities.multipart_part_size_bytes > 0, "upload capabilities");
+  assert(capabilities.max_multipart_parts === 10_000 && capabilities.max_multipart_upload_bytes === capabilities.multipart_part_size_bytes * capabilities.max_multipart_parts && capabilities.supports_resume === true, "multipart capabilities");
   assert((await requestRaw("GET", "/admin/")).status === 200, "admin dashboard shell");
   assert(["break-glass", "cloudflare-access"].includes((await request("GET", "/v1/admin/session", undefined, adminToken)).mode), "admin session");
   cases.push("health-and-admin-dashboard");
@@ -62,12 +63,12 @@ try {
   cases.push("share-create-range-revoke");
 
   const partSize = capabilities.multipart_part_size_bytes;
-  const large = new Uint8Array(partSize + 17);
+  const large = new Uint8Array(capabilities.max_small_upload_bytes + 1024);
   large.fill(65);
   large.set(new TextEncoder().encode("multipart-e2e"), large.length - 13);
   const init = await request("POST", "/v1/uploads", { filename:"large.bin", content_type:"application/octet-stream", size_bytes:large.length, sha256:sha256(large), purpose:"e2e", retention:"30d" }, first.token);
   resources.artifacts.push(init.artifact_id);
-  assert(init.total_parts === 2, "multipart init");
+  assert(init.total_parts === Math.ceil(large.length / partSize) && init.total_parts > 2, "multipart threshold init");
   assert((await requestRaw("PUT", `/v1/uploads/${init.upload_id}/parts/1`, new Uint8Array(2), first.token, { "content-length":"2" })).status === 422, "multipart part sizing");
   for (let part = 0; part < init.total_parts; part += 1) {
     const chunk = large.slice(part * init.part_size_bytes, Math.min(large.length, (part + 1) * init.part_size_bytes));
@@ -76,9 +77,9 @@ try {
   const complete = await request("POST", `/v1/uploads/${init.upload_id}/complete`, {}, first.token);
   const repeated = await request("POST", `/v1/uploads/${init.upload_id}/complete`, {}, first.token);
   assert(complete.id === init.artifact_id && repeated.id === init.artifact_id, "idempotent completion");
-  const largeRange = await requestRaw("GET", `/v1/artifacts/${init.artifact_id}`, undefined, first.token, { range:`bytes=${partSize + 4}-${partSize + 16}` });
+  const largeRange = await requestRaw("GET", `/v1/artifacts/${init.artifact_id}`, undefined, first.token, { range:`bytes=${large.length - 13}-${large.length - 1}` });
   assert(largeRange.status === 206 && await largeRange.text() === "multipart-e2e", "large Range playback");
-  cases.push("multipart-validation-idempotency-range");
+  cases.push("multipart-over-direct-limit-idempotency-range");
 
   const overview = await request("GET", "/v1/admin/overview", undefined, adminToken);
   assert(overview.active_keys >= 3 && overview.active_artifacts >= 2, "admin overview state");

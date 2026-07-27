@@ -51,6 +51,30 @@ describe("portable skill workflows", () => {
     }
   });
 
+  it("retries failed parts and resumes an unfinished multipart upload", async () => {
+    const fixture = await createFixture({ failPart: 2, failPartAttempts: 100 });
+    try {
+      const directory = await temporaryDirectory();
+      const input = join(directory, "resume.bin");
+      await writeFile(input, "hello");
+
+      await expect(run(process.execPath, [cli, "upload", input], fixture.env)).rejects.toThrow("retry with --resume");
+      const manifest = (await readdir(directory)).find((name) => name.endsWith(".artifact-upload.json"));
+      expect(manifest).toBeTruthy();
+      expect(fixture.partAttempts.get(2)).toBe(4);
+
+      fixture.failPartAttempts = 0;
+      const resumed = JSON.parse(await run(process.execPath, [cli, "upload", input, "--resume"], fixture.env));
+      expect(resumed.id).toBe("art_1");
+      expect(fixture.partAttempts.get(1)).toBe(1);
+      expect(fixture.partAttempts.get(2)).toBe(5);
+      expect(fixture.objects.get("art_1")?.toString()).toBe("hello");
+      expect((await readdir(directory)).filter((name) => name.endsWith(".artifact-upload.json"))).toEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("rejects a download whose decoded byte count differs from Content-Length", async () => {
     const fixture = await createFixture();
     try {
@@ -161,9 +185,11 @@ else console.log(JSON.stringify({ id: 1 }));
   });
 });
 
-async function createFixture() {
+async function createFixture(options: { failPart?: number; failPartAttempts?: number } = {}) {
   const objects = new Map<string, Buffer>();
   const uploads = new Map<string, { artifactId: string; parts: Map<number, Buffer> }>();
+  const partAttempts = new Map<number, number>();
+  const controls = { failPart: options.failPart ?? null, failPartAttempts: options.failPartAttempts ?? 0 };
   let artifactSequence = 0;
   const server = createServer(async (request, response) => {
     try {
@@ -189,6 +215,12 @@ async function createFixture() {
     }
     const part = /^\/v1\/uploads\/([^/]+)\/parts\/(\d+)$/.exec(url.pathname);
     if (request.method === "PUT" && part) {
+      const partNumber = Number(part[2]);
+      partAttempts.set(partNumber, (partAttempts.get(partNumber) || 0) + 1);
+      if (controls.failPart === partNumber && controls.failPartAttempts > 0) {
+        controls.failPartAttempts -= 1;
+        return send(response, 503, { error: "temporary" });
+      }
       uploads.get(part[1])?.parts.set(Number(part[2]), await body(request));
       return send(response, 200, { etag: `etag-${part[2]}` });
     }
@@ -248,6 +280,9 @@ async function createFixture() {
   return {
     env: { ...process.env, ARTIFACTS_URL: `http://127.0.0.1:${address.port}`, ARTIFACTS_API_KEY: "test-key" },
     objects,
+    partAttempts,
+    get failPartAttempts() { return controls.failPartAttempts; },
+    set failPartAttempts(value: number) { controls.failPartAttempts = value; },
     close: () => new Promise<void>((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise())),
   };
 }

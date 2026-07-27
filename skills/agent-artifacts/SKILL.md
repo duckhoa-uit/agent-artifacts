@@ -62,6 +62,9 @@ Use `scripts/artifactctl.mjs`.
 
 ```bash
 node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/artifactctl.mjs" upload ./screenshot.png --purpose pr-evidence --retention 7d
+node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/artifactctl.mjs" upload ./large-recording.mp4 --purpose pr-evidence --concurrency 3
+# Resume an interrupted multipart upload from its local manifest.
+node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/artifactctl.mjs" upload ./large-recording.mp4 --resume
 node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/artifactctl.mjs" share ARTIFACT_ID --expires 604800
 node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/artifactctl.mjs" get ARTIFACT_ID --output ./download.png
 node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/artifactctl.mjs" delete ARTIFACT_ID
