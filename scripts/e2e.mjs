@@ -15,7 +15,7 @@ const cleanupFailures = [];
 try {
   const health = await request("GET", "/healthz");
   assert(health.ok === true, "healthz");
-  const capabilities = await request("GET", "/v1/capabilities");
+  const capabilities = await waitForCapabilities();
   assert(capabilities.max_small_upload_bytes > 0 && capabilities.multipart_part_size_bytes > 0, "upload capabilities");
   assert(capabilities.max_multipart_parts === 10_000 && capabilities.max_multipart_upload_bytes === capabilities.multipart_part_size_bytes * capabilities.max_multipart_parts && capabilities.supports_resume === true, "multipart capabilities");
   assert((await requestRaw("GET", "/admin/")).status === 200, "admin dashboard shell");
@@ -130,6 +130,16 @@ async function waitForAnalytics() {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return result;
+}
+async function waitForCapabilities() {
+  const deadline = Date.now() + 30_000;
+  let result;
+  while (Date.now() < deadline) {
+    result = await request("GET", "/v1/capabilities");
+    if (result.max_multipart_parts === 10_000 && result.supports_resume === true) return result;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error(`Worker capabilities did not converge after deploy: ${JSON.stringify(result)}`);
 }
 async function request(method, path, body, bearer) { const response = await requestRaw(method, path, body === undefined ? undefined : JSON.stringify(body), bearer, body === undefined ? {} : { "content-type":"application/json" }); const text = await response.text(); const data = text ? JSON.parse(text) : {}; if (!response.ok) throw new Error(`${method} ${path} ${response.status}: ${text}`); return data; }
 async function requestRaw(method, path, body, bearer, extra = {}) {
