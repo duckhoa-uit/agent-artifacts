@@ -102,8 +102,8 @@ OpenClaw can install the tagged GitHub release into the current workspace or
 globally for all workspaces:
 
 ```bash
-openclaw skills install git:duckhoa-uit/agent-artifacts@v0.3.0
-openclaw skills install git:duckhoa-uit/agent-artifacts@v0.3.0 --global
+openclaw skills install git:duckhoa-uit/agent-artifacts@v0.3.1
+openclaw skills install git:duckhoa-uit/agent-artifacts@v0.3.1 --global
 openclaw skills list
 ```
 

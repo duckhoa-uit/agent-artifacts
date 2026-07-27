@@ -31,6 +31,20 @@ test -f ~/.hermes/skills/agent-artifacts/SKILL.md
 The native installer records provenance/content state and downloads the
 referenced `scripts/` and `references/` resources alongside `SKILL.md`.
 
+For an explicit pinned tag, use the tagged skill directory URL:
+
+```bash
+npx skills add https://github.com/duckhoa-uit/agent-artifacts/tree/v0.3.1/skills/agent-artifacts \
+  --skill agent-artifacts \
+  --global \
+  --agent hermes-agent \
+  --copy \
+  --yes
+```
+
+The native tap flow follows the repository's current published skill; record
+the installed commit or tag when reproducible rollback is required.
+
 ## Cross-agent installation with `npx skills`
 
 Use this route when standardizing installation across Codex, Claude Code, and
@@ -115,6 +129,12 @@ node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/artifactctl.mjs" \
 
 Return the artifact ID, filename, retention/expiry, and share URL when one was
 created. Never return the API key or authorization headers.
+
+Large multipart uploads retry failed parts and persist a local manifest beside
+the source file. If Hermes is interrupted during a large upload, run the same
+command again with `--resume`; the file size, mtime, and SHA-256 must still
+match the manifest. The manifest is removed after successful completion and is
+ignored by Git through `*.artifact-upload.json`.
 
 ## Updating the distribution
 

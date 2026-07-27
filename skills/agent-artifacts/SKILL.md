@@ -13,7 +13,7 @@ required_environment_variables:
     required_for: private artifact operations
 metadata:
   author: duckhoa-uit
-  version: "0.3.0"
+  version: "0.3.1"
 ---
 
 # Agent Artifacts Skill
