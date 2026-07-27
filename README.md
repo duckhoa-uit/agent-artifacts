@@ -1,6 +1,8 @@
 # Agent Artifacts
 
-Private, owner-isolated artifact handoff for coding agents. Agent Artifacts
+[![skills.sh](https://skills.sh/b/duckhoa-uit/agent-artifacts)](https://skills.sh/duckhoa-uit/agent-artifacts)
+
+Private-by-default, owner-isolated artifact handoff for coding agents. Agent Artifacts
 stores screenshots, recordings, logs, build outputs, and other files behind a
 Cloudflare Worker so an agent can return a stable link instead of trying to
 push a binary through a gateway or a GitHub comment.
@@ -54,6 +56,71 @@ node "$AGENT_ARTIFACTS_SKILL_DIR/scripts/github-pr-evidence.mjs" \
 The helper uploads and shares the files, then creates or updates one marked PR
 comment. Re-running it replaces the previous evidence and cleans up the old
 artifacts instead of creating comment or storage clutter.
+
+## Install the agent skill
+
+The fastest path is the public `skills` CLI. It installs the skill, scripts, and
+references into the selected agent's native skill directory; the source
+repository is not needed at runtime.
+
+```bash
+npx skills add duckhoa-uit/agent-artifacts \
+  --skill agent-artifacts \
+  --global \
+  --agent codex \
+  --agent claude-code \
+  --agent hermes-agent \
+  --copy \
+  --yes
+```
+
+Verify and update the installation with:
+
+```bash
+npx skills list --global
+npx skills check
+npx skills update
+```
+
+### Hermes Agent
+
+For a Hermes-only VPS, use Hermes's native Skills Hub flow as the service user:
+
+```bash
+hermes skills tap add duckhoa-uit/agent-artifacts
+hermes skills install duckhoa-uit/agent-artifacts/agent-artifacts
+hermes skills list --source hub
+hermes skills check
+```
+
+The skill is installed under `~/.hermes/skills/agent-artifacts`. Start a new
+session or run `/reset` after installation so Hermes rebuilds its skill index.
+
+### OpenClaw
+
+OpenClaw can install the tagged GitHub release into the current workspace or
+globally for all workspaces:
+
+```bash
+openclaw skills install git:duckhoa-uit/agent-artifacts@v0.3.0
+openclaw skills install git:duckhoa-uit/agent-artifacts@v0.3.0 --global
+openclaw skills list
+```
+
+If the OpenClaw version does not resolve nested skills from the repository,
+use the generic installer instead:
+
+```bash
+npx skills add duckhoa-uit/agent-artifacts \
+  --skill agent-artifacts \
+  --global \
+  --agent openclaw \
+  --yes
+```
+
+After installation, inject `ARTIFACTS_URL` and a profile-scoped
+`ARTIFACTS_API_KEY` into the agent's own environment. Never put secrets in a
+prompt, skill file, or committed repository.
 
 ## Capabilities
 
@@ -137,55 +204,12 @@ select a D1 database.
 Never add Cloudflare credentials, the break-glass admin secret, or agent API
 keys to `wrangler.jsonc`, `.env.example`, or another committed file.
 
-## Agent skill
-
-Install the self-contained `agent-artifacts` skill from GitHub. The installer
-places `SKILL.md`, its scripts, and its referenced files in the selected agent's
-native skill directory.
+## Agent skill reference
 
 Browse the published skill at
 [skills.sh/duckhoa-uit/agent-artifacts/agent-artifacts](https://skills.sh/duckhoa-uit/agent-artifacts/agent-artifacts).
-
-Project-scoped installation:
-
-```bash
-npx skills add duckhoa-uit/agent-artifacts --skill agent-artifacts
-```
-
-Global installation for Codex, Claude Code, and Hermes Agent:
-
-```bash
-npx skills add duckhoa-uit/agent-artifacts \
-  --skill agent-artifacts \
-  --global \
-  --agent codex claude-code hermes-agent \
-  --copy \
-  --yes
-```
-
-For a Hermes-only VPS, the native Hermes Skills Hub flow is preferred. Run this
-on that VPS as the Hermes service user:
-
-```bash
-hermes skills tap add duckhoa-uit/agent-artifacts
-hermes skills install duckhoa-uit/agent-artifacts/agent-artifacts
-```
-
-The public repository installs without a GitHub credential. Hermes installs
-the skill under `~/.hermes/skills/agent-artifacts`, including only the
-referenced scripts and references; the source repository is not required at
-runtime. Use the `npx skills` command above when the same release is also being
-installed into other agent runtimes. See
-[the Hermes distribution reference](skills/agent-artifacts/references/hermes.md)
-for update and verification commands.
-
-Inject `ARTIFACTS_URL` and a profile-scoped `ARTIFACTS_API_KEY` into each
-agent's own environment. Hermes declares both variables in the skill
-frontmatter and passes them to its terminal/execute-code sandbox when the skill
-loads. Use separate non-synthetic keys for production Hermes profiles and
-synthetic keys only for disposable smoke/E2E profiles. The installed skill
-chooses and runs its bundled workflow; agents do not need the source repository
-or a globally installed `artifactctl`.
+The detailed Hermes VPS setup, profile-scoped permissions, update workflow, and
+troubleshooting are documented in [the Hermes distribution reference](skills/agent-artifacts/references/hermes.md).
 
 ## CLI
 
